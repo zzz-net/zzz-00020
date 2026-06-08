@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS appointment (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   confirmed_at TEXT,
   cancelled_at TEXT,
+  attendance_status TEXT CHECK(attendance_status IN ('arrived','late','no_show')),
+  attendance_remark TEXT,
+  attendance_handled_by TEXT,
+  attendance_handled_at TEXT,
   FOREIGN KEY (application_id) REFERENCES recheck_application(id),
   FOREIGN KEY (patient_id) REFERENCES patient(id),
   FOREIGN KEY (doctor_id) REFERENCES doctor(id),
@@ -165,6 +169,24 @@ CREATE INDEX IF NOT EXISTS idx_waitlist_log ON waitlist_log(waitlist_id);
 
 db.exec(initSql);
 
+// attendance_log 表需要在迁移后创建（避免旧库因缺列导致主初始化脚本失败）
+const attendanceTableSql = `
+CREATE TABLE IF NOT EXISTS attendance_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  appointment_id INTEGER NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('register','revoke')),
+  old_status TEXT CHECK(old_status IN ('arrived','late','no_show')),
+  new_status TEXT CHECK(new_status IN ('arrived','late','no_show')),
+  old_remark TEXT,
+  new_remark TEXT,
+  operator_role TEXT NOT NULL,
+  operator_name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (appointment_id) REFERENCES appointment(id)
+);
+`;
+db.exec(attendanceTableSql);
+
 // ---------- 数据库迁移：兼容旧库，自动添加缺失字段 ----------
 // SQLite 支持 ALTER TABLE ADD COLUMN；已有列会静默跳过（通过 PRAGMA table_info 先检查）
 function columnExists(table: string, column: string): boolean {
@@ -197,6 +219,10 @@ addColumnIfMissing('appointment', 'from_waitlist', 'INTEGER NOT NULL DEFAULT 0')
 addColumnIfMissing('appointment', 'waitlist_id', 'INTEGER');
 addColumnIfMissing('appointment', 'waitlist_matched_at', 'TEXT');
 addColumnIfMissing('appointment', 'waitlist_handled_by', 'TEXT');
+addColumnIfMissing('appointment', 'attendance_status', 'TEXT');
+addColumnIfMissing('appointment', 'attendance_remark', 'TEXT');
+addColumnIfMissing('appointment', 'attendance_handled_by', 'TEXT');
+addColumnIfMissing('appointment', 'attendance_handled_at', 'TEXT');
 
 // 补齐索引（旧库可能没有）
 function indexExists(name: string): boolean {
@@ -210,6 +236,8 @@ if (!indexExists('idx_waitlist_patient')) db.exec('CREATE INDEX idx_waitlist_pat
 if (!indexExists('idx_waitlist_status')) db.exec('CREATE INDEX idx_waitlist_status ON waitlist_record(status)');
 if (!indexExists('idx_waitlist_department')) db.exec('CREATE INDEX idx_waitlist_department ON waitlist_record(department)');
 if (!indexExists('idx_waitlist_log')) db.exec('CREATE INDEX idx_waitlist_log ON waitlist_log(waitlist_id)');
+if (!indexExists('idx_appt_attendance')) db.exec('CREATE INDEX idx_appt_attendance ON appointment(attendance_status)');
+if (!indexExists('idx_attendance_log_appt')) db.exec('CREATE INDEX idx_attendance_log_appt ON attendance_log(appointment_id)');
 
 // 归一化旧版状态值
 const upd = db.prepare("UPDATE reschedule_request SET status = 'pending' WHERE status = 'pending_patient'").run();

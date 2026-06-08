@@ -14,6 +14,7 @@ import {
   Download,
   ChevronDown,
   ListChecks,
+  UserX,
 } from "lucide-react";
 import { useRoleStore } from "@/store/roleStore";
 import { apiClient } from "@/lib/apiClient";
@@ -64,6 +65,12 @@ const NAV_ITEMS = [
     roles: ["nurse", "doctor", "patient"] as UserRole[],
   },
   {
+    to: "/followup",
+    label: "爽约和迟到随访",
+    icon: UserX,
+    roles: ["nurse", "doctor", "patient"] as UserRole[],
+  },
+  {
     to: "/export",
     label: "数据导出",
     icon: Download,
@@ -87,6 +94,7 @@ function Breadcrumb() {
     "/slots": "号源管理",
     "/confirm": "预约确认",
     "/records": "预约记录",
+    "/followup": "爽约和迟到随访",
     "/export": "数据导出",
   };
   const current = pathMap[location.pathname] || "首页";

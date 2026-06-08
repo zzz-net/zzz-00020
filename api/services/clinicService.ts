@@ -24,6 +24,10 @@ import type {
   CreateWaitlistReq,
   ConfirmWaitlistReq,
   AbandonWaitlistReq,
+  AttendanceStatus,
+  AttendanceLog,
+  RegisterAttendanceReq,
+  RevokeAttendanceReq,
 } from '@shared/types';
 
 function rowToDoctor(r: any): Doctor {
@@ -94,6 +98,10 @@ function rowToAppointment(r: any): Appointment {
     waitlistId: r.waitlist_id ?? null,
     waitlistMatchedAt: r.waitlist_matched_at ?? null,
     waitlistHandledBy: r.waitlist_handled_by ?? null,
+    attendanceStatus: r.attendance_status ?? null,
+    attendanceRemark: r.attendance_remark ?? null,
+    attendanceHandledBy: r.attendance_handled_by ?? null,
+    attendanceHandledAt: r.attendance_handled_at ?? null,
   };
 }
 
@@ -174,6 +182,21 @@ function rowToHistory(r: any): StatusHistory {
     rescheduleId: r.reschedule_id ?? null,
     oldSlotId: r.old_slot_id ?? null,
     newSlotId: r.new_slot_id ?? null,
+    createdAt: r.created_at,
+  };
+}
+
+function rowToAttendanceLog(r: any): AttendanceLog {
+  return {
+    id: r.id,
+    appointmentId: r.appointment_id,
+    action: r.action,
+    oldStatus: r.old_status ?? null,
+    newStatus: r.new_status ?? null,
+    oldRemark: r.old_remark ?? null,
+    newRemark: r.new_remark ?? null,
+    operatorRole: r.operator_role,
+    operatorName: r.operator_name,
     createdAt: r.created_at,
   };
 }
@@ -405,6 +428,7 @@ export function listAppointments(params?: {
   doctorId?: number;
   dateFrom?: string;
   dateTo?: string;
+  attendanceStatus?: AttendanceStatus;
 }): Appointment[] {
   const wheres: string[] = [];
   const args: any[] = [];
@@ -427,6 +451,10 @@ export function listAppointments(params?: {
   if (params?.dateTo) {
     wheres.push('s.date <= ?');
     args.push(params.dateTo);
+  }
+  if (params?.attendanceStatus) {
+    wheres.push('ap.attendance_status = ?');
+    args.push(params.attendanceStatus);
   }
   const where = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
   const sql = `
@@ -842,6 +870,9 @@ export function exportAppointmentsCsv(params?: {
   status?: string;
   dateFrom?: string;
   dateTo?: string;
+  patientId?: number;
+  doctorId?: number;
+  attendanceStatus?: AttendanceStatus;
 }): string {
   const rows = listAppointments(params);
   const header = [
@@ -863,6 +894,10 @@ export function exportAppointmentsCsv(params?: {
     '候补ID',
     '候补匹配时间',
     '候补处理人',
+    '到场状态',
+    '处理备注',
+    '处理人',
+    '处理时间',
   ];
   const lines = [header.join(',')];
   for (const r of rows) {
@@ -880,6 +915,13 @@ export function exportAppointmentsCsv(params?: {
         : r.pendingRescheduleStatus === 'accepted'
         ? '改期成功'
         : '患者已拒绝'
+      : '';
+    const attendanceLabel = r.attendanceStatus
+      ? r.attendanceStatus === 'arrived'
+        ? '已到诊'
+        : r.attendanceStatus === 'late'
+        ? '迟到'
+        : '爽约'
       : '';
     lines.push(
       [
@@ -901,6 +943,10 @@ export function exportAppointmentsCsv(params?: {
         r.waitlistId || '',
         r.waitlistMatchedAt || '',
         (r.waitlistHandledBy || '').replace(/,/g, '，'),
+        attendanceLabel,
+        (r.attendanceRemark || '').replace(/,/g, '，'),
+        (r.attendanceHandledBy || '').replace(/,/g, '，'),
+        r.attendanceHandledAt || '',
       ].join(','),
     );
   }
@@ -911,6 +957,9 @@ export function exportAppointmentsJson(params?: {
   status?: string;
   dateFrom?: string;
   dateTo?: string;
+  patientId?: number;
+  doctorId?: number;
+  attendanceStatus?: AttendanceStatus;
 }): string {
   const appts = listAppointments(params);
   const apptIds = appts.map((a) => a.id);
@@ -1300,4 +1349,135 @@ export function confirmWaitlist(
     )
     .get(appointmentId);
   return { success: true, data: rowToAppointment(row) };
+}
+
+export function registerAttendance(
+  id: number,
+  req: RegisterAttendanceReq,
+  session: RoleSession,
+): { success: boolean; data?: Appointment; error?: string } {
+  if (session.role !== 'nurse') {
+    return { success: false, error: '仅护士可登记到场状态' };
+  }
+  if (!req.status || !['arrived', 'late', 'no_show'].includes(req.status)) {
+    return { success: false, error: '无效的到场状态' };
+  }
+  const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(id) as any;
+  if (!appt) return { success: false, error: '预约不存在' };
+  if (appt.status === 'cancelled') {
+    return { success: false, error: '已取消的预约不可登记到场状态' };
+  }
+  if (appt.status !== 'confirmed' && appt.status !== 'pending_confirm') {
+    return { success: false, error: '仅已确认或待确认的预约可登记到场状态' };
+  }
+  const slot = db.prepare('SELECT * FROM doctor_slot WHERE id = ?').get(appt.slot_id) as any;
+  if (!slot) return { success: false, error: '号源不存在' };
+  const today = new Date().toISOString().slice(0, 10);
+  if (slot.date > today) {
+    return { success: false, error: '仅预约日期当天或之后可登记到场状态' };
+  }
+
+  const oldStatus = appt.attendance_status ?? null;
+  const oldRemark = appt.attendance_remark ?? null;
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE appointment
+       SET attendance_status = ?, attendance_remark = ?,
+           attendance_handled_by = ?, attendance_handled_at = datetime('now')
+       WHERE id = ?`,
+    ).run(req.status, req.remark || null, session.name, id);
+
+    db.prepare(
+      `INSERT INTO attendance_log
+       (appointment_id, action, old_status, new_status, old_remark, new_remark,
+        operator_role, operator_name)
+       VALUES (?, 'register', ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      oldStatus,
+      req.status,
+      oldRemark,
+      req.remark || null,
+      session.role,
+      session.name,
+    );
+  });
+  tx();
+
+  const row = db
+    .prepare(
+      `SELECT ap.*, p.name as patient_name, d.name as doctor_name, d.department,
+              s.date as slot_date, s.period as slot_period
+       FROM appointment ap
+       LEFT JOIN patient p ON p.id = ap.patient_id
+       LEFT JOIN doctor d ON d.id = ap.doctor_id
+       LEFT JOIN doctor_slot s ON s.id = ap.slot_id
+       WHERE ap.id = ?`,
+    )
+    .get(id);
+  return { success: true, data: rowToAppointment(row) };
+}
+
+export function revokeAttendance(
+  id: number,
+  req: RevokeAttendanceReq,
+  session: RoleSession,
+): { success: boolean; data?: Appointment; error?: string } {
+  if (session.role !== 'nurse') {
+    return { success: false, error: '仅护士可撤销到场登记' };
+  }
+  const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(id) as any;
+  if (!appt) return { success: false, error: '预约不存在' };
+  if (!appt.attendance_status) {
+    return { success: false, error: '该预约尚无到场登记，不可撤销' };
+  }
+
+  const oldStatus = appt.attendance_status;
+  const oldRemark = appt.attendance_remark ?? null;
+  const revokeRemark = req.remark || null;
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE appointment
+       SET attendance_status = NULL, attendance_remark = NULL,
+           attendance_handled_by = NULL, attendance_handled_at = NULL
+       WHERE id = ?`,
+    ).run(id);
+
+    db.prepare(
+      `INSERT INTO attendance_log
+       (appointment_id, action, old_status, new_status, old_remark, new_remark,
+        operator_role, operator_name)
+       VALUES (?, 'revoke', ?, NULL, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      oldStatus,
+      oldRemark,
+      revokeRemark,
+      session.role,
+      session.name,
+    );
+  });
+  tx();
+
+  const row = db
+    .prepare(
+      `SELECT ap.*, p.name as patient_name, d.name as doctor_name, d.department,
+              s.date as slot_date, s.period as slot_period
+       FROM appointment ap
+       LEFT JOIN patient p ON p.id = ap.patient_id
+       LEFT JOIN doctor d ON d.id = ap.doctor_id
+       LEFT JOIN doctor_slot s ON s.id = ap.slot_id
+       WHERE ap.id = ?`,
+    )
+    .get(id);
+  return { success: true, data: rowToAppointment(row) };
+}
+
+export function listAttendanceLogs(appointmentId: number): AttendanceLog[] {
+  return db
+    .prepare('SELECT * FROM attendance_log WHERE appointment_id = ? ORDER BY created_at ASC')
+    .all(appointmentId)
+    .map(rowToAttendanceLog);
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Download, Filter, FileSpreadsheet, FileJson } from 'lucide-react';
-import type { AppointmentStatus } from '@shared/types';
-import { STATUS_LABEL } from '@shared/types';
+import type { AppointmentStatus, AttendanceStatus } from '@shared/types';
+import { STATUS_LABEL, ATTENDANCE_STATUS_LABEL } from '@shared/types';
 
 export default function ExportPage() {
   const [filters, setFilters] = useState({
@@ -10,6 +10,7 @@ export default function ExportPage() {
     status: '',
     dateFrom: '',
     dateTo: '',
+    attendanceStatus: '',
   });
 
   function buildUrl(format: 'csv' | 'json') {
@@ -19,6 +20,7 @@ export default function ExportPage() {
     if (filters.status) params.set('status', filters.status);
     if (filters.dateFrom) params.set('dateFrom', filters.dateFrom);
     if (filters.dateTo) params.set('dateTo', filters.dateTo);
+    if (filters.attendanceStatus) params.set('attendanceStatus', filters.attendanceStatus);
     const qs = params.toString();
     return `/api/export/${format}${qs ? `?${qs}` : ''}`;
   }
@@ -35,7 +37,7 @@ export default function ExportPage() {
           <Filter className="w-4 h-4 text-slate-500" />
           <span className="text-sm font-medium text-slate-700">筛选条件</span>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-3">
           <div>
             <label className="block text-xs text-slate-500 mb-1">患者ID</label>
             <input
@@ -57,7 +59,7 @@ export default function ExportPage() {
             />
           </div>
           <div>
-            <label className="block text-xs text-slate-500 mb-1">状态</label>
+            <label className="block text-xs text-slate-500 mb-1">预约状态</label>
             <select
               value={filters.status}
               onChange={(e) => setFilters({ ...filters, status: e.target.value })}
@@ -67,6 +69,21 @@ export default function ExportPage() {
               {(Object.keys(STATUS_LABEL) as AppointmentStatus[]).map((s) => (
                 <option key={s} value={s}>
                   {STATUS_LABEL[s]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">到场状态</label>
+            <select
+              value={filters.attendanceStatus}
+              onChange={(e) => setFilters({ ...filters, attendanceStatus: e.target.value })}
+              className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">全部</option>
+              {(Object.keys(ATTENDANCE_STATUS_LABEL) as AttendanceStatus[]).map((s) => (
+                <option key={s} value={s}>
+                  {ATTENDANCE_STATUS_LABEL[s]}
                 </option>
               ))}
             </select>

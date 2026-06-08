@@ -38,6 +38,23 @@ export type ApplicationStatus =
 
 export type AppointmentStatus = 'pending_confirm' | 'confirmed' | 'cancelled';
 
+export type AttendanceStatus = 'arrived' | 'late' | 'no_show';
+
+export type AttendanceLogAction = 'register' | 'revoke';
+
+export interface AttendanceLog {
+  id: number;
+  appointmentId: number;
+  action: AttendanceLogAction;
+  oldStatus: AttendanceStatus | null;
+  newStatus: AttendanceStatus | null;
+  oldRemark: string | null;
+  newRemark: string | null;
+  operatorRole: UserRole;
+  operatorName: string;
+  createdAt: string;
+}
+
 export type RescheduleStatus = 'pending' | 'accepted' | 'rejected';
 
 export interface RecheckApplication {
@@ -79,6 +96,10 @@ export interface Appointment {
   waitlistId: number | null;
   waitlistMatchedAt: string | null;
   waitlistHandledBy: string | null;
+  attendanceStatus: AttendanceStatus | null;
+  attendanceRemark: string | null;
+  attendanceHandledBy: string | null;
+  attendanceHandledAt: string | null;
 }
 
 export interface RescheduleRequest {
@@ -269,3 +290,18 @@ export const WAITLIST_URGENCY_LABEL: Record<WaitlistUrgency, string> = {
   urgent: '加急',
   emergency: '紧急',
 };
+
+export const ATTENDANCE_STATUS_LABEL: Record<AttendanceStatus, string> = {
+  arrived: '已到诊',
+  late: '迟到',
+  no_show: '爽约',
+};
+
+export interface RegisterAttendanceReq {
+  status: AttendanceStatus;
+  remark?: string;
+}
+
+export interface RevokeAttendanceReq {
+  remark?: string;
+}

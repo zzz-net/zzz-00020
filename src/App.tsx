@@ -8,6 +8,7 @@ import Slots from "@/pages/Slots";
 import Confirm from "@/pages/Confirm";
 import Records from "@/pages/Records";
 import ExportPage from "@/pages/ExportPage";
+import Followup from "@/pages/Followup";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/confirm" element={<Confirm />} />
           <Route path="/records" element={<Records />} />
           <Route path="/export" element={<ExportPage />} />
+          <Route path="/followup" element={<Followup />} />
         </Route>
         <Route
           path="*"

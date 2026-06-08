@@ -14,8 +14,10 @@ import type {
   DoctorSlot,
   RescheduleRequest,
   RescheduleStatus,
+  AttendanceStatus,
+  AttendanceLog,
 } from '@shared/types';
-import { STATUS_LABEL, PERIOD_LABEL, RESCHEDULE_STATUS_LABEL } from '@shared/types';
+import { STATUS_LABEL, PERIOD_LABEL, RESCHEDULE_STATUS_LABEL, ATTENDANCE_STATUS_LABEL } from '@shared/types';
 
 const roleLabels: Record<UserRole, string> = {
   nurse: '护士',
@@ -29,6 +31,12 @@ const rescheduleStatusColors: Record<RescheduleStatus, string> = {
   rejected: 'bg-red-100 text-red-800',
 };
 
+const attendanceStatusColors: Record<AttendanceStatus, string> = {
+  arrived: 'bg-emerald-100 text-emerald-800',
+  late: 'bg-amber-100 text-amber-800',
+  no_show: 'bg-red-100 text-red-800',
+};
+
 function RescheduleStatusBadge({ status }: { status: RescheduleStatus }) {
   return (
     <span
@@ -38,6 +46,20 @@ function RescheduleStatusBadge({ status }: { status: RescheduleStatus }) {
       )}
     >
       {RESCHEDULE_STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+function AttendanceBadge({ status }: { status: AttendanceStatus | null }) {
+  if (!status) return <span className="text-slate-400 text-xs">未登记</span>;
+  return (
+    <span
+      className={cn(
+        'rounded-full px-3 py-1 text-xs font-medium',
+        attendanceStatusColors[status],
+      )}
+    >
+      {ATTENDANCE_STATUS_LABEL[status]}
     </span>
   );
 }
@@ -279,6 +301,7 @@ export default function Records() {
                   <th className="text-left px-4 py-3 font-medium text-slate-600">状态</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">来源</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">改期</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">到场状态</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">取消原因</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">创建时间</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">操作</th>
@@ -321,6 +344,9 @@ export default function Records() {
                       ) : (
                         <span className="text-slate-400">-</span>
                       )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <AttendanceBadge status={appt.attendanceStatus} />
                     </td>
                     <td className="px-4 py-3">
                       {appt.status === 'cancelled' && appt.cancelReason ? (
@@ -407,6 +433,25 @@ export default function Records() {
                   <span className="text-slate-500">当前状态：</span>
                   <StatusBadge status={selectedAppt.status} />
                 </div>
+                {selectedAppt.attendanceStatus && (
+                  <div className="col-span-2 bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
+                    <span className="text-slate-600 text-sm inline-flex items-center gap-1.5">
+                      <span className="font-medium">到场状态：</span>
+                      <AttendanceBadge status={selectedAppt.attendanceStatus} />
+                    </span>
+                    {selectedAppt.attendanceRemark && (
+                      <div className="text-slate-600 text-sm mt-1">
+                        <span className="font-medium">处理备注：</span>
+                        {selectedAppt.attendanceRemark}
+                      </div>
+                    )}
+                    {selectedAppt.attendanceHandledBy && (
+                      <div className="text-slate-500 text-xs mt-1">
+                        处理人：{selectedAppt.attendanceHandledBy} · {selectedAppt.attendanceHandledAt}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {selectedAppt.fromWaitlist && (
                   <div className="col-span-2 bg-violet-50 rounded-lg px-3 py-2">
                     <span className="text-violet-600 text-sm inline-flex items-center gap-1.5">

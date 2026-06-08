@@ -13,6 +13,9 @@ import type {
   AbandonWaitlistReq,
   WaitlistStatus,
   WaitlistUrgency,
+  RegisterAttendanceReq,
+  RevokeAttendanceReq,
+  AttendanceStatus,
 } from '@shared/types';
 
 const router = Router();
@@ -88,11 +91,49 @@ router.get('/appointments', (req: Request, res: Response) => {
   const doctorId = req.query.doctorId ? Number(req.query.doctorId) : undefined;
   const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
   const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
+  const attendanceStatus = req.query.attendanceStatus
+    ? (String(req.query.attendanceStatus) as AttendanceStatus)
+    : undefined;
   res.json({
     success: true,
-    data: svc.listAppointments({ status, patientId, doctorId, dateFrom, dateTo }),
+    data: svc.listAppointments({ status, patientId, doctorId, dateFrom, dateTo, attendanceStatus }),
   });
 });
+
+router.get('/appointments/:id/attendance-logs', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  res.json({ success: true, data: svc.listAttendanceLogs(id) });
+});
+
+router.post(
+  '/appointments/:id/attendance',
+  requireRole('nurse'),
+  (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const body = req.body as RegisterAttendanceReq;
+    const result = svc.registerAttendance(id, body, req.session!);
+    if (!result.success) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  },
+);
+
+router.post(
+  '/appointments/:id/attendance/revoke',
+  requireRole('nurse'),
+  (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const body = req.body as RevokeAttendanceReq;
+    const result = svc.revokeAttendance(id, body, req.session!);
+    if (!result.success) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  },
+);
 
 router.post('/appointments/:id/confirm', (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -173,7 +214,12 @@ router.get('/export/csv', (req: Request, res: Response) => {
   const status = req.query.status ? String(req.query.status) : undefined;
   const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
   const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
-  const csv = svc.exportAppointmentsCsv({ status, dateFrom, dateTo });
+  const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;
+  const doctorId = req.query.doctorId ? Number(req.query.doctorId) : undefined;
+  const attendanceStatus = req.query.attendanceStatus
+    ? (String(req.query.attendanceStatus) as AttendanceStatus)
+    : undefined;
+  const csv = svc.exportAppointmentsCsv({ status, dateFrom, dateTo, patientId, doctorId, attendanceStatus });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader(
     'Content-Disposition',
@@ -186,7 +232,12 @@ router.get('/export/json', (req: Request, res: Response) => {
   const status = req.query.status ? String(req.query.status) : undefined;
   const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
   const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
-  const json = svc.exportAppointmentsJson({ status, dateFrom, dateTo });
+  const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;
+  const doctorId = req.query.doctorId ? Number(req.query.doctorId) : undefined;
+  const attendanceStatus = req.query.attendanceStatus
+    ? (String(req.query.attendanceStatus) as AttendanceStatus)
+    : undefined;
+  const json = svc.exportAppointmentsJson({ status, dateFrom, dateTo, patientId, doctorId, attendanceStatus });
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader(
     'Content-Disposition',
@@ -200,8 +251,13 @@ router.get('/export/appointments', (req: Request, res: Response) => {
   const status = req.query.status ? String(req.query.status) : undefined;
   const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
   const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
+  const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;
+  const doctorId = req.query.doctorId ? Number(req.query.doctorId) : undefined;
+  const attendanceStatus = req.query.attendanceStatus
+    ? (String(req.query.attendanceStatus) as AttendanceStatus)
+    : undefined;
   if (format === 'csv') {
-    const csv = svc.exportAppointmentsCsv({ status, dateFrom, dateTo });
+    const csv = svc.exportAppointmentsCsv({ status, dateFrom, dateTo, patientId, doctorId, attendanceStatus });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
@@ -211,7 +267,7 @@ router.get('/export/appointments', (req: Request, res: Response) => {
     return;
   }
   if (format === 'json' || !format) {
-    const json = svc.exportAppointmentsJson({ status, dateFrom, dateTo });
+    const json = svc.exportAppointmentsJson({ status, dateFrom, dateTo, patientId, doctorId, attendanceStatus });
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader(
       'Content-Disposition',

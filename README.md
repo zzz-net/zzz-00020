@@ -328,13 +328,21 @@ npx tsx scripts/http-regression-waitlist.ts
 - 若有待确认改期，预约行展示醒目的"改期待确认"标签
 - 弹出两个按钮：**接受改期**、**拒绝改期**（拒绝需填写原因）
 
-### 3. CSV 导出（/api/export/csv）
+### 3. CSV 导出
+两条路径等价，均可使用：
+- 主路径：`GET /api/export/csv`
+- 兼容路径：`GET /api/export/appointments?format=csv`
+
 表头包含改期相关列：
 ```
 预约ID,患者姓名,医生姓名,科室,就诊日期,时段,状态,是否有待改期,改期状态,取消原因,是否释放容量,创建时间,确认时间,取消时间
 ```
 
-### 4. JSON 导出（/api/export/json）
+### 4. JSON 导出
+两条路径等价，均可使用：
+- 主路径：`GET /api/export/json`
+- 兼容路径：`GET /api/export/appointments?format=json`
+
 每条预约对象包含：
 - `pendingRescheduleId` / `pendingRescheduleStatus`：当前待确认改期（如有）
 - `rescheduleCount`：累计改期次数
