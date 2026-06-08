@@ -114,12 +114,53 @@ CREATE TABLE IF NOT EXISTS status_history (
   FOREIGN KEY (new_slot_id) REFERENCES doctor_slot(id)
 );
 
+CREATE TABLE IF NOT EXISTS waitlist_record (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  patient_id INTEGER NOT NULL,
+  doctor_id INTEGER,
+  department TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  acceptable_date_from TEXT NOT NULL,
+  acceptable_date_to TEXT NOT NULL,
+  urgency TEXT NOT NULL DEFAULT 'normal' CHECK(urgency IN ('normal','urgent','emergency')),
+  status TEXT NOT NULL DEFAULT 'waiting' CHECK(status IN ('waiting','matched','confirmed','abandoned')),
+  application_id INTEGER,
+  appointment_id INTEGER,
+  matched_slot_id INTEGER,
+  matched_at TEXT,
+  confirmed_at TEXT,
+  abandoned_at TEXT,
+  abandon_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by TEXT NOT NULL,
+  FOREIGN KEY (patient_id) REFERENCES patient(id),
+  FOREIGN KEY (doctor_id) REFERENCES doctor(id),
+  FOREIGN KEY (application_id) REFERENCES recheck_application(id),
+  FOREIGN KEY (appointment_id) REFERENCES appointment(id),
+  FOREIGN KEY (matched_slot_id) REFERENCES doctor_slot(id)
+);
+
+CREATE TABLE IF NOT EXISTS waitlist_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  waitlist_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  operator_role TEXT NOT NULL,
+  operator_name TEXT NOT NULL,
+  remark TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (waitlist_id) REFERENCES waitlist_record(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_slot_doctor_date ON doctor_slot(doctor_id, date);
 CREATE INDEX IF NOT EXISTS idx_appt_patient ON appointment(patient_id);
 CREATE INDEX IF NOT EXISTS idx_appt_status ON appointment(status);
 CREATE INDEX IF NOT EXISTS idx_history_appt ON status_history(appointment_id);
 CREATE INDEX IF NOT EXISTS idx_reschedule_appt ON reschedule_request(appointment_id);
 CREATE INDEX IF NOT EXISTS idx_reschedule_status ON reschedule_request(status);
+CREATE INDEX IF NOT EXISTS idx_waitlist_patient ON waitlist_record(patient_id);
+CREATE INDEX IF NOT EXISTS idx_waitlist_status ON waitlist_record(status);
+CREATE INDEX IF NOT EXISTS idx_waitlist_department ON waitlist_record(department);
+CREATE INDEX IF NOT EXISTS idx_waitlist_log ON waitlist_log(waitlist_id);
 `;
 
 db.exec(initSql);
@@ -152,6 +193,10 @@ addColumnIfMissing('reschedule_request', 'decided_by_name', 'TEXT');
 addColumnIfMissing('appointment', 'capacity_released', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('appointment', 'pending_reschedule_id', 'INTEGER');
 addColumnIfMissing('appointment', 'reschedule_count', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('appointment', 'from_waitlist', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('appointment', 'waitlist_id', 'INTEGER');
+addColumnIfMissing('appointment', 'waitlist_matched_at', 'TEXT');
+addColumnIfMissing('appointment', 'waitlist_handled_by', 'TEXT');
 
 // 补齐索引（旧库可能没有）
 function indexExists(name: string): boolean {
@@ -161,6 +206,10 @@ function indexExists(name: string): boolean {
 if (!indexExists('idx_reschedule_appt')) db.exec('CREATE INDEX idx_reschedule_appt ON reschedule_request(appointment_id)');
 if (!indexExists('idx_reschedule_status')) db.exec('CREATE INDEX idx_reschedule_status ON reschedule_request(status)');
 if (!indexExists('idx_history_appt')) db.exec('CREATE INDEX idx_history_appt ON status_history(appointment_id)');
+if (!indexExists('idx_waitlist_patient')) db.exec('CREATE INDEX idx_waitlist_patient ON waitlist_record(patient_id)');
+if (!indexExists('idx_waitlist_status')) db.exec('CREATE INDEX idx_waitlist_status ON waitlist_record(status)');
+if (!indexExists('idx_waitlist_department')) db.exec('CREATE INDEX idx_waitlist_department ON waitlist_record(department)');
+if (!indexExists('idx_waitlist_log')) db.exec('CREATE INDEX idx_waitlist_log ON waitlist_log(waitlist_id)');
 
 // 归一化旧版状态值
 const upd = db.prepare("UPDATE reschedule_request SET status = 'pending' WHERE status = 'pending_patient'").run();

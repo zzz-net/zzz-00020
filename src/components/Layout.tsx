@@ -13,6 +13,7 @@ import {
   Search,
   Download,
   ChevronDown,
+  ListChecks,
 } from "lucide-react";
 import { useRoleStore } from "@/store/roleStore";
 import { apiClient } from "@/lib/apiClient";
@@ -36,6 +37,12 @@ const NAV_ITEMS = [
     to: "/triage",
     label: "分诊确认",
     icon: Stethoscope,
+    roles: ["nurse"] as UserRole[],
+  },
+  {
+    to: "/waitlist",
+    label: "候补补号",
+    icon: ListChecks,
     roles: ["nurse"] as UserRole[],
   },
   {
@@ -76,6 +83,7 @@ function Breadcrumb() {
     "/": "仪表盘",
     "/applications": "复诊申请",
     "/triage": "分诊确认",
+    "/waitlist": "候补补号",
     "/slots": "号源管理",
     "/confirm": "预约确认",
     "/records": "预约记录",

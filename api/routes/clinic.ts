@@ -8,6 +8,11 @@ import type {
   CancelAppointmentReq,
   RescheduleReq,
   RescheduleDecisionReq,
+  CreateWaitlistReq,
+  ConfirmWaitlistReq,
+  AbandonWaitlistReq,
+  WaitlistStatus,
+  WaitlistUrgency,
 } from '@shared/types';
 
 const router = Router();
@@ -188,6 +193,74 @@ router.get('/export/json', (req: Request, res: Response) => {
     `attachment; filename="appointments_${Date.now()}.json"`,
   );
   res.send(json);
+});
+
+router.get('/waitlists', (req: Request, res: Response) => {
+  const status = req.query.status ? (String(req.query.status) as WaitlistStatus) : undefined;
+  const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;
+  const department = req.query.department ? String(req.query.department) : undefined;
+  const doctorId = req.query.doctorId ? Number(req.query.doctorId) : undefined;
+  const urgency = req.query.urgency ? (String(req.query.urgency) as WaitlistUrgency) : undefined;
+  res.json({
+    success: true,
+    data: svc.listWaitlists({ status, patientId, department, doctorId, urgency }),
+  });
+});
+
+router.get('/waitlists/:id', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const data = svc.getWaitlist(id);
+  if (!data) {
+    res.status(404).json({ success: false, error: '候补记录不存在' });
+    return;
+  }
+  res.json({ success: true, data });
+});
+
+router.get('/waitlists/:id/logs', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  res.json({ success: true, data: svc.listWaitlistLogs(id) });
+});
+
+router.post('/waitlists', requireRole('nurse'), (req: Request, res: Response) => {
+  const body = req.body as CreateWaitlistReq;
+  const result = svc.createWaitlist(body, req.session!);
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+router.get('/waitlists/match/all', requireRole('nurse'), (_req: Request, res: Response) => {
+  res.json({ success: true, data: svc.matchAllWaitlists() });
+});
+
+router.get('/waitlists/match/slot/:slotId', requireRole('nurse'), (req: Request, res: Response) => {
+  const slotId = Number(req.params.slotId);
+  res.json({ success: true, data: svc.matchWaitlistForSlot(slotId) });
+});
+
+router.post('/waitlists/:id/confirm', requireRole('nurse'), (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const body = req.body as ConfirmWaitlistReq;
+  const result = svc.confirmWaitlist(id, body, req.session!);
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+router.post('/waitlists/:id/abandon', requireRole('nurse'), (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const body = req.body as AbandonWaitlistReq;
+  const result = svc.abandonWaitlist(id, body, req.session!);
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
 });
 
 export default router;

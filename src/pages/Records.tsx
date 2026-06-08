@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ClipboardList, Filter, X, Clock, History, RefreshCw, CalendarRange } from 'lucide-react';
+import { ClipboardList, Filter, X, Clock, History, RefreshCw, CalendarRange, ListChecks } from 'lucide-react';
 import { apiClient } from '@/lib/apiClient';
 import StatusBadge from '@/components/StatusBadge';
 import { useRoleStore } from '@/store/roleStore';
@@ -277,6 +277,7 @@ export default function Records() {
                   <th className="text-left px-4 py-3 font-medium text-slate-600">就诊日期</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">时段</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">状态</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">来源</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">改期</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">取消原因</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">创建时间</th>
@@ -303,6 +304,16 @@ export default function Records() {
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={appt.status} />
+                    </td>
+                    <td className="px-4 py-3">
+                      {appt.fromWaitlist ? (
+                        <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium bg-violet-100 text-violet-800">
+                          <ListChecks className="w-3 h-3" />
+                          候补补号
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 text-xs">正常分诊</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {appt.pendingRescheduleStatus ? (
@@ -396,6 +407,23 @@ export default function Records() {
                   <span className="text-slate-500">当前状态：</span>
                   <StatusBadge status={selectedAppt.status} />
                 </div>
+                {selectedAppt.fromWaitlist && (
+                  <div className="col-span-2 bg-violet-50 rounded-lg px-3 py-2">
+                    <span className="text-violet-600 text-sm inline-flex items-center gap-1.5">
+                      <ListChecks className="w-4 h-4" />
+                      <span className="font-medium">该预约来自候补补号</span>
+                      {selectedAppt.waitlistId && (
+                        <span className="text-violet-500">（候补#{selectedAppt.waitlistId}）</span>
+                      )}
+                      {selectedAppt.waitlistMatchedAt && (
+                        <span className="text-violet-500"> · 匹配时间：{selectedAppt.waitlistMatchedAt}</span>
+                      )}
+                      {selectedAppt.waitlistHandledBy && (
+                        <span className="text-violet-500"> · 处理人：{selectedAppt.waitlistHandledBy}</span>
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {reschedules.length > 0 && (

@@ -75,6 +75,10 @@ export interface Appointment {
   cancelledAt: string | null;
   pendingRescheduleId?: number | null;
   pendingRescheduleStatus?: RescheduleStatus | null;
+  fromWaitlist: boolean;
+  waitlistId: number | null;
+  waitlistMatchedAt: string | null;
+  waitlistHandledBy: string | null;
 }
 
 export interface RescheduleRequest {
@@ -185,4 +189,83 @@ export const RESCHEDULE_STATUS_LABEL: Record<RescheduleStatus, string> = {
   pending: '待患者确认',
   accepted: '改期成功',
   rejected: '患者已拒绝',
+};
+
+export type WaitlistStatus = 'waiting' | 'matched' | 'confirmed' | 'abandoned';
+export type WaitlistUrgency = 'normal' | 'urgent' | 'emergency';
+
+export interface WaitlistRecord {
+  id: number;
+  patientId: number;
+  patientName?: string;
+  doctorId: number | null;
+  doctorName?: string;
+  department: string;
+  reason: string;
+  acceptableDateFrom: string;
+  acceptableDateTo: string;
+  urgency: WaitlistUrgency;
+  status: WaitlistStatus;
+  applicationId: number | null;
+  appointmentId: number | null;
+  matchedSlotId: number | null;
+  matchedAt: string | null;
+  confirmedAt: string | null;
+  abandonedAt: string | null;
+  abandonReason: string | null;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface WaitlistLog {
+  id: number;
+  waitlistId: number;
+  action: string;
+  operatorRole: UserRole;
+  operatorName: string;
+  remark: string | null;
+  createdAt: string;
+}
+
+export interface WaitlistMatchResult {
+  waitlistId: number;
+  slotId: number;
+  slotDate: string;
+  slotPeriod: SlotPeriod;
+  doctorId: number;
+  doctorName?: string;
+  department: string;
+  matchReasons: string[];
+}
+
+export interface CreateWaitlistReq {
+  patientId: number;
+  department: string;
+  doctorId?: number;
+  reason: string;
+  acceptableDateFrom: string;
+  acceptableDateTo: string;
+  urgency: WaitlistUrgency;
+  applicationId?: number;
+}
+
+export interface ConfirmWaitlistReq {
+  slotId: number;
+}
+
+export interface AbandonWaitlistReq {
+  reason: string;
+}
+
+export const WAITLIST_STATUS_LABEL: Record<WaitlistStatus, string> = {
+  waiting: '等待中',
+  matched: '已匹配',
+  confirmed: '已补号',
+  abandoned: '已放弃',
+};
+
+export const WAITLIST_URGENCY_LABEL: Record<WaitlistUrgency, string> = {
+  normal: '普通',
+  urgent: '加急',
+  emergency: '紧急',
 };

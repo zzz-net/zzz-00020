@@ -3,6 +3,7 @@ import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import Applications from "@/pages/Applications";
 import Triage from "@/pages/Triage";
+import Waitlist from "@/pages/Waitlist";
 import Slots from "@/pages/Slots";
 import Confirm from "@/pages/Confirm";
 import Records from "@/pages/Records";
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/applications" element={<Applications />} />
           <Route path="/triage" element={<Triage />} />
+          <Route path="/waitlist" element={<Waitlist />} />
           <Route path="/slots" element={<Slots />} />
           <Route path="/confirm" element={<Confirm />} />
           <Route path="/records" element={<Records />} />

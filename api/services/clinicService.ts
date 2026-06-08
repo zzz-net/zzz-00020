@@ -16,6 +16,14 @@ import type {
   RescheduleDecisionReq,
   RoleSession,
   OverviewStats,
+  WaitlistRecord,
+  WaitlistLog,
+  WaitlistMatchResult,
+  WaitlistStatus,
+  WaitlistUrgency,
+  CreateWaitlistReq,
+  ConfirmWaitlistReq,
+  AbandonWaitlistReq,
 } from '@shared/types';
 
 function rowToDoctor(r: any): Doctor {
@@ -82,6 +90,47 @@ function rowToAppointment(r: any): Appointment {
     pendingRescheduleStatus: r.pending_reschedule_status
       ? normalizeRescheduleStatus(r.pending_reschedule_status)
       : null,
+    fromWaitlist: !!r.from_waitlist,
+    waitlistId: r.waitlist_id ?? null,
+    waitlistMatchedAt: r.waitlist_matched_at ?? null,
+    waitlistHandledBy: r.waitlist_handled_by ?? null,
+  };
+}
+
+function rowToWaitlist(r: any): WaitlistRecord {
+  return {
+    id: r.id,
+    patientId: r.patient_id,
+    patientName: r.patient_name,
+    doctorId: r.doctor_id ?? null,
+    doctorName: r.doctor_name,
+    department: r.department,
+    reason: r.reason,
+    acceptableDateFrom: r.acceptable_date_from,
+    acceptableDateTo: r.acceptable_date_to,
+    urgency: r.urgency,
+    status: r.status,
+    applicationId: r.application_id ?? null,
+    appointmentId: r.appointment_id ?? null,
+    matchedSlotId: r.matched_slot_id ?? null,
+    matchedAt: r.matched_at ?? null,
+    confirmedAt: r.confirmed_at ?? null,
+    abandonedAt: r.abandoned_at ?? null,
+    abandonReason: r.abandon_reason ?? null,
+    createdAt: r.created_at,
+    createdBy: r.created_by,
+  };
+}
+
+function rowToWaitlistLog(r: any): WaitlistLog {
+  return {
+    id: r.id,
+    waitlistId: r.waitlist_id,
+    action: r.action,
+    operatorRole: r.operator_role,
+    operatorName: r.operator_name,
+    remark: r.remark ?? null,
+    createdAt: r.created_at,
   };
 }
 function normalizeRescheduleStatus(s: string): RescheduleStatus {
@@ -810,6 +859,10 @@ export function exportAppointmentsCsv(params?: {
     '创建时间',
     '确认时间',
     '取消时间',
+    '是否来自候补',
+    '候补ID',
+    '候补匹配时间',
+    '候补处理人',
   ];
   const lines = [header.join(',')];
   for (const r of rows) {
@@ -844,6 +897,10 @@ export function exportAppointmentsCsv(params?: {
         r.createdAt,
         r.confirmedAt || '',
         r.cancelledAt || '',
+        r.fromWaitlist ? '是' : '否',
+        r.waitlistId || '',
+        r.waitlistMatchedAt || '',
+        (r.waitlistHandledBy || '').replace(/,/g, '，'),
       ].join(','),
     );
   }
@@ -868,4 +925,379 @@ export function exportAppointmentsJson(params?: {
     reschedules: rescheduleByAppt.get(a.id) || [],
   }));
   return JSON.stringify(enriched, null, 2);
+}
+
+function addWaitlistLog(
+  waitlistId: number,
+  action: string,
+  session: RoleSession,
+  remark?: string | null,
+) {
+  db.prepare(
+    `INSERT INTO waitlist_log (waitlist_id, action, operator_role, operator_name, remark)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(waitlistId, action, session.role, session.name, remark || null);
+}
+
+export function listWaitlists(params?: {
+  status?: WaitlistStatus;
+  patientId?: number;
+  department?: string;
+  doctorId?: number;
+  urgency?: WaitlistUrgency;
+}): WaitlistRecord[] {
+  const wheres: string[] = [];
+  const args: any[] = [];
+  if (params?.status) {
+    wheres.push('w.status = ?');
+    args.push(params.status);
+  }
+  if (params?.patientId) {
+    wheres.push('w.patient_id = ?');
+    args.push(params.patientId);
+  }
+  if (params?.department) {
+    wheres.push('w.department = ?');
+    args.push(params.department);
+  }
+  if (params?.doctorId) {
+    wheres.push('w.doctor_id = ?');
+    args.push(params.doctorId);
+  }
+  if (params?.urgency) {
+    wheres.push('w.urgency = ?');
+    args.push(params.urgency);
+  }
+  const where = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
+  const urgencyOrder = "CASE w.urgency WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END";
+  const sql = `
+    SELECT w.*, p.name as patient_name, d.name as doctor_name
+    FROM waitlist_record w
+    LEFT JOIN patient p ON p.id = w.patient_id
+    LEFT JOIN doctor d ON d.id = w.doctor_id
+    ${where}
+    ORDER BY ${urgencyOrder}, w.created_at ASC
+  `;
+  return db.prepare(sql).all(...args).map(rowToWaitlist);
+}
+
+export function getWaitlist(id: number): WaitlistRecord | null {
+  const row = db
+    .prepare(
+      `SELECT w.*, p.name as patient_name, d.name as doctor_name
+       FROM waitlist_record w
+       LEFT JOIN patient p ON p.id = w.patient_id
+       LEFT JOIN doctor d ON d.id = w.doctor_id
+       WHERE w.id = ?`,
+    )
+    .get(id);
+  return row ? rowToWaitlist(row) : null;
+}
+
+export function listWaitlistLogs(waitlistId: number): WaitlistLog[] {
+  return db
+    .prepare('SELECT * FROM waitlist_log WHERE waitlist_id = ? ORDER BY created_at ASC')
+    .all(waitlistId)
+    .map(rowToWaitlistLog);
+}
+
+export function validateCreateWaitlist(
+  req: CreateWaitlistReq,
+): Record<string, string> | null {
+  const errors: Record<string, string> = {};
+  if (!req.patientId || req.patientId <= 0) errors.patientId = '请选择患者';
+  if (!req.department || req.department.trim().length < 1) errors.department = '请选择科室';
+  if (!req.reason || req.reason.trim().length < 2) errors.reason = '补号原因至少2个字符';
+  if (!req.acceptableDateFrom) errors.acceptableDateFrom = '请选择可接受起始日期';
+  if (!req.acceptableDateTo) errors.acceptableDateTo = '请选择可接受结束日期';
+  if (req.acceptableDateFrom && req.acceptableDateTo && req.acceptableDateFrom > req.acceptableDateTo) {
+    errors.acceptableDateTo = '结束日期不能早于起始日期';
+  }
+  if (!req.urgency || !['normal', 'urgent', 'emergency'].includes(req.urgency)) {
+    errors.urgency = '请选择紧急程度';
+  }
+  return Object.keys(errors).length ? errors : null;
+}
+
+export function createWaitlist(
+  req: CreateWaitlistReq,
+  session: RoleSession,
+): { success: boolean; data?: WaitlistRecord; error?: string; errors?: Record<string, string> } {
+  if (session.role !== 'nurse') {
+    return { success: false, error: '仅护士可创建候补补号' };
+  }
+  const errors = validateCreateWaitlist(req);
+  if (errors) return { success: false, errors };
+
+  const patient = db.prepare('SELECT id FROM patient WHERE id = ?').get(req.patientId);
+  if (!patient) return { success: false, error: '患者不存在' };
+
+  if (req.doctorId) {
+    const doctor = db.prepare('SELECT id, department FROM doctor WHERE id = ?').get(req.doctorId) as any;
+    if (!doctor) return { success: false, error: '指定医生不存在' };
+    if (doctor.department !== req.department) {
+      return { success: false, error: '指定医生与科室不匹配' };
+    }
+  } else {
+    const deptDoctor = db.prepare('SELECT id FROM doctor WHERE department = ? LIMIT 1').get(req.department);
+    if (!deptDoctor) return { success: false, error: '该科室暂无医生' };
+  }
+
+  let waitlistId: number;
+  const tx = db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO waitlist_record
+         (patient_id, doctor_id, department, reason, acceptable_date_from, acceptable_date_to,
+          urgency, status, application_id, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?)`,
+      )
+      .run(
+        req.patientId,
+        req.doctorId ?? null,
+        req.department,
+        req.reason,
+        req.acceptableDateFrom,
+        req.acceptableDateTo,
+        req.urgency,
+        req.applicationId ?? null,
+        session.name,
+      );
+    waitlistId = Number(info.lastInsertRowid);
+    addWaitlistLog(waitlistId, '创建候补', session, `原因: ${req.reason}`);
+  });
+  tx();
+
+  return { success: true, data: getWaitlist(waitlistId)! };
+}
+
+export function matchWaitlistForSlot(slotId: number): WaitlistMatchResult[] {
+  const slot = db
+    .prepare(
+      `SELECT s.*, d.name as doctor_name, d.department
+       FROM doctor_slot s LEFT JOIN doctor d ON d.id = s.doctor_id WHERE s.id = ?`,
+    )
+    .get(slotId) as any;
+  if (!slot) return [];
+  if (slot.used_capacity >= slot.total_capacity) return [];
+
+  const waiting = db
+    .prepare(
+      `SELECT w.*, p.name as patient_name, d.name as doctor_name
+       FROM waitlist_record w
+       LEFT JOIN patient p ON p.id = w.patient_id
+       LEFT JOIN doctor d ON d.id = w.doctor_id
+       WHERE w.status = 'waiting'
+         AND w.department = ?
+         AND w.acceptable_date_from <= ?
+         AND w.acceptable_date_to >= ?
+       ORDER BY CASE w.urgency WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END,
+                w.created_at ASC`,
+    )
+    .all(slot.department, slot.date, slot.date) as any[];
+
+  const results: WaitlistMatchResult[] = [];
+  for (const w of waiting) {
+    const reasons: string[] = [];
+    reasons.push(`科室匹配: ${w.department}`);
+    reasons.push(`日期在可接受范围: ${w.acceptable_date_from} ~ ${w.acceptable_date_to} 包含 ${slot.date}`);
+    if (w.doctor_id) {
+      if (w.doctor_id === slot.doctor_id) {
+        reasons.push(`指定医生匹配: ${w.doctor_name}`);
+      } else {
+        continue;
+      }
+    } else {
+      reasons.push(`未指定医生，接受 ${slot.doctor_name || `医生#${slot.doctor_id}`}`);
+    }
+
+    const overlap = db
+      .prepare(
+        `SELECT COUNT(*) as c FROM appointment ap
+         JOIN doctor_slot s ON s.id = ap.slot_id
+         WHERE ap.patient_id = ? AND s.date = ? AND ap.status IN ('pending_confirm','confirmed')`,
+      )
+      .get(w.patient_id, slot.date) as { c: number };
+    if (overlap.c > 0) continue;
+
+    results.push({
+      waitlistId: w.id,
+      slotId: slot.id,
+      slotDate: slot.date,
+      slotPeriod: slot.period,
+      doctorId: slot.doctor_id,
+      doctorName: slot.doctor_name,
+      department: slot.department,
+      matchReasons: reasons,
+    });
+  }
+  return results;
+}
+
+export function matchAllWaitlists(): { slotId: number; matches: WaitlistMatchResult[] }[] {
+  const slots = db
+    .prepare(
+      `SELECT s.id FROM doctor_slot s
+       WHERE s.used_capacity < s.total_capacity
+       ORDER BY s.date, s.period`,
+    )
+    .all() as { id: number }[];
+  const result: { slotId: number; matches: WaitlistMatchResult[] }[] = [];
+  for (const s of slots) {
+    const matches = matchWaitlistForSlot(s.id);
+    if (matches.length > 0) {
+      result.push({ slotId: s.id, matches });
+    }
+  }
+  return result;
+}
+
+export function abandonWaitlist(
+  id: number,
+  req: AbandonWaitlistReq,
+  session: RoleSession,
+): { success: boolean; data?: WaitlistRecord; error?: string } {
+  if (session.role !== 'nurse') {
+    return { success: false, error: '仅护士可操作候补记录' };
+  }
+  const w = db.prepare('SELECT * FROM waitlist_record WHERE id = ?').get(id) as any;
+  if (!w) return { success: false, error: '候补记录不存在' };
+  if (w.status === 'confirmed') return { success: false, error: '已完成补号的记录不可放弃' };
+  if (w.status === 'abandoned') return { success: false, error: '该候补记录已放弃' };
+  if (!req.reason || req.reason.trim().length < 2) {
+    return { success: false, error: '请填写放弃原因（至少2个字符）' };
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE waitlist_record SET status = 'abandoned', abandoned_at = datetime('now'), abandon_reason = ? WHERE id = ?`,
+    ).run(req.reason, id);
+    addWaitlistLog(id, '标记放弃', session, `原因: ${req.reason}`);
+  });
+  tx();
+  return { success: true, data: getWaitlist(id)! };
+}
+
+export function confirmWaitlist(
+  id: number,
+  req: ConfirmWaitlistReq,
+  session: RoleSession,
+): { success: boolean; data?: Appointment; error?: string } {
+  if (session.role !== 'nurse') {
+    return { success: false, error: '仅护士可确认候补补号' };
+  }
+  const w = db.prepare('SELECT * FROM waitlist_record WHERE id = ?').get(id) as any;
+  if (!w) return { success: false, error: '候补记录不存在' };
+  if (w.status === 'confirmed') return { success: false, error: '该候补记录已完成补号' };
+  if (w.status === 'abandoned') return { success: false, error: '该候补记录已放弃' };
+
+  const slot = db
+    .prepare(
+      `SELECT s.*, d.department, d.name as doctor_name
+       FROM doctor_slot s LEFT JOIN doctor d ON d.id = s.doctor_id WHERE s.id = ?`,
+    )
+    .get(req.slotId) as any;
+  if (!slot) return { success: false, error: '号源不存在' };
+  if (slot.used_capacity >= slot.total_capacity) return { success: false, error: '该号源容量已满' };
+  if (slot.department !== w.department) {
+    return { success: false, error: '号源科室与候补记录科室不匹配' };
+  }
+  if (w.doctor_id && w.doctor_id !== slot.doctor_id) {
+    return { success: false, error: '号源医生与候补指定医生不匹配' };
+  }
+  if (slot.date < w.acceptable_date_from || slot.date > w.acceptable_date_to) {
+    return { success: false, error: '号源日期不在候补可接受日期范围内' };
+  }
+
+  const overlap = db
+    .prepare(
+      `SELECT COUNT(*) as c FROM appointment ap
+       JOIN doctor_slot s ON s.id = ap.slot_id
+       WHERE ap.patient_id = ? AND s.date = ? AND ap.status IN ('pending_confirm','confirmed')`,
+    )
+    .get(w.patient_id, slot.date) as { c: number };
+  if (overlap.c > 0) {
+    return {
+      success: false,
+      error: '同一患者同一天已存在有效预约，存在重叠，请取消后再操作',
+    };
+  }
+
+  let appointmentId: number;
+  const tx = db.transaction(() => {
+    const slotAfter = db.prepare('SELECT * FROM doctor_slot WHERE id = ?').get(req.slotId) as any;
+    if (slotAfter.used_capacity >= slotAfter.total_capacity) {
+      throw new Error('WAITLIST_CONFLICT:号源容量已满，候补补号失败（并发冲突）');
+    }
+    const affected = db
+      .prepare(
+        'UPDATE doctor_slot SET used_capacity = used_capacity + 1 WHERE id = ? AND used_capacity < total_capacity',
+      )
+      .run(req.slotId);
+    if (affected.changes === 0) {
+      throw new Error('WAITLIST_CONFLICT:号源占用失败，容量已满（并发冲突）');
+    }
+
+    let applicationId = w.application_id;
+    if (!applicationId) {
+      const appInfo = db
+        .prepare(
+          `INSERT INTO recheck_application (patient_id, doctor_id, reason, expected_date, status, created_by)
+           VALUES (?, ?, ?, ?, 'pending_confirm', ?)`,
+        )
+        .run(w.patient_id, slot.doctor_id, w.reason, slot.date, session.name);
+      applicationId = Number(appInfo.lastInsertRowid);
+    } else {
+      db.prepare(
+        `UPDATE recheck_application SET status = 'pending_confirm', slot_id = ?, doctor_id = ?, expected_date = ? WHERE id = ?`,
+      ).run(req.slotId, slot.doctor_id, slot.date, applicationId);
+    }
+
+    const apptInfo = db
+      .prepare(
+        `INSERT INTO appointment
+         (application_id, patient_id, doctor_id, slot_id, status, from_waitlist, waitlist_id, waitlist_matched_at, waitlist_handled_by)
+         VALUES (?, ?, ?, ?, 'pending_confirm', 1, ?, datetime('now'), ?)`,
+      )
+      .run(applicationId, w.patient_id, slot.doctor_id, req.slotId, id, session.name);
+    appointmentId = Number(apptInfo.lastInsertRowid);
+
+    db.prepare(
+      `UPDATE recheck_application SET appointment_id = ? WHERE id = ?`,
+    ).run(appointmentId, applicationId);
+
+    db.prepare(
+      `UPDATE waitlist_record
+       SET status = 'confirmed', appointment_id = ?, matched_slot_id = ?,
+           matched_at = datetime('now'), confirmed_at = datetime('now')
+       WHERE id = ?`,
+    ).run(appointmentId, req.slotId, id);
+
+    addWaitlistLog(id, '确认补号', session, `号源: ${slot.date} ${slot.period} (号源#${req.slotId})`);
+
+    addHistory(appointmentId, null, 'pending_confirm', session, `候补补号分配号源，来自候补#${id}`);
+  });
+
+  try {
+    tx();
+  } catch (e: any) {
+    const msg: string = e.message || String(e);
+    if (msg.startsWith('WAITLIST_CONFLICT:')) {
+      return { success: false, error: msg.slice('WAITLIST_CONFLICT:'.length) };
+    }
+    throw e;
+  }
+
+  const row = db
+    .prepare(
+      `SELECT ap.*, p.name as patient_name, d.name as doctor_name, d.department,
+              s.date as slot_date, s.period as slot_period
+       FROM appointment ap
+       LEFT JOIN patient p ON p.id = ap.patient_id
+       LEFT JOIN doctor d ON d.id = ap.doctor_id
+       LEFT JOIN doctor_slot s ON s.id = ap.slot_id
+       WHERE ap.id = ?`,
+    )
+    .get(appointmentId);
+  return { success: true, data: rowToAppointment(row) };
 }

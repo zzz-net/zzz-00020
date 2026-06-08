@@ -240,6 +240,82 @@ npx tsx scripts/http-regression-reschedule.ts
 
 ---
 
+## 自动化测试（候补补号功能 6 场景 + HTTP 全链路回归）
+
+### 1. 单元/集成测试：`scripts/test-waitlist.ts`
+
+独立临时数据库（`data/test-waitlist-{timestamp}.db`），不影响主库 `data/clinic.db`。脚本结束后自动清理临时文件。
+
+```bash
+npx tsx scripts/test-waitlist.ts
+```
+
+覆盖的 6 个测试场景：
+
+| # | 场景 | 验证点 |
+|---|------|--------|
+| 1 | 创建候补记录 | 正常创建成功 + 写入操作日志；字段校验（空科室、原因过短、日期倒置）拦截；非护士角色拦截 |
+| 2 | 重启后数据持久化 | db.close() → new Database() 重新打开，候补记录数、日志数完全一致；字段（patient_id/urgency/status/reason）完整；操作日志含角色、姓名、备注 |
+| 3 | 释放号源后匹配 | 满员号源无匹配；释放容量后按紧急度（emergency > urgent > normal）+ 创建时间排序；指定医生的仅匹配该医生；不指定医生匹配科室所有医生 |
+| 4 | 冲突拦截 | 同日已有有效预约拦截；号源容量已满拦截；已 confirmed 的候补二次确认拦截；非护士角色确认被拦截 |
+| 5 | 确认补号 / 标记放弃 | 确认后生成预约，from_waitlist=1、waitlist_id/matched_at/handled_by 完整；号源容量 +1；候补状态变为 confirmed；已 confirmed 不能放弃；正常放弃后状态=abandoned，原因和时间写入；已 abandoned 不能重复放弃；操作日志含「确认补号」和「标记放弃」 |
+| 6 | 导出字段完整 | 来自候补的预约 JSON 包含 waitlistId/waitlistMatchedAt/waitlistHandledBy；正常分诊预约 fromWaitlist=0；CSV 表头包含「是否来自候补」「候补ID」「候补匹配时间」「候补处理人」 |
+
+### 2. HTTP 全链路回归测试：`scripts/http-regression-waitlist.ts`
+
+**必须先启动真实服务**（`npm run dev` 或 `npm run server:dev`，监听 :3001），然后使用既有 `data/clinic.db` 直接打真实 HTTP 接口，覆盖用户所有可见行为：
+
+```bash
+# 另开一个终端，确保后端服务已在 :3001 运行
+npx tsx scripts/http-regression-waitlist.ts
+```
+
+覆盖 8 个端到端用例：
+
+| # | 用例 | 验证点 |
+|---|------|--------|
+| 1 | 创建候补记录 | 护士创建成功返回数据；字段校验返回 errors 对象；非护士角色被拦截；不指定医生（任意科室医生）的候补给创建 |
+| 2 | 候补列表查询/筛选/排序 | 全量列表包含刚创建的记录；按 patientId / status / urgency 组合筛选生效；按科室筛选生效；默认按紧急度 + 创建时间排序（紧急优先） |
+| 3 | 匹配推荐 | 全量匹配 `GET /waitlists/match/all` 返回 slot→waitlist 分组；单号源匹配 `GET /waitlists/match/slot/:id` 返回候选候补充匹配原因 |
+| 4 | 确认补号 | `POST /waitlists/:id/confirm` 返回 appointmentId；`GET /appointments` 中该预约 fromWaitlist=true、waitlistId/matchedAt/handledBy 完整 |
+| 5 | 冲突拦截 | 已 confirmed 二次确认被拦截；同日已有有效预约拦截；非护士角色确认被拦截 |
+| 6 | 标记放弃 | 已 confirmed 的候补不能放弃；正常放弃后 status=abandoned 且写入原因；已 abandoned 不能重复放弃 |
+| 7 | 操作日志 | `GET /waitlists/:id/logs` 返回数组；包含「创建候补」「确认补号」等动作；含操作人角色与姓名 |
+| 8 | 导出字段 | CSV 表头包含 4 个候补字段（是否来自候补/候补ID/候补匹配时间/候补处理人）；JSON 中候补预约包含完整的 waitlistId/waitlistMatchedAt/waitlistHandledBy |
+
+---
+
+## 用户可见的候补信息展示
+
+候补信息在所有关键页面和导出接口中均完整展示：
+
+### 1. 候补补号管理页（护士可见，路径 `/waitlist`）
+- **列表筛选**：状态（候补中/已匹配/已补号/已放弃）、患者、科室、指定医生、紧急程度，5 个维度组合筛选
+- **列表排序**：编号、患者、可接受日期、紧急度、创建时间（点击表头可升降序切换）
+- **新增候补弹窗**：患者、科室、指定医生（可选）、补号原因、起止日期、紧急程度
+- **推荐补号弹窗**：按号源分组展示匹配结果，显示匹配原因（科室/医生/日期/无同日冲突）、剩余容量、一键确认补号
+- **操作日志弹窗**：时间线展示创建、紧急度调整、确认补号、标记放弃等所有历史动作，含操作人角色、姓名、备注、时间
+- **标记放弃弹窗**：填写放弃原因
+
+### 2. 预约记录页
+- 列表新增「来源」列：候补补号显示紫色「候补补号」标签；正常分诊显示灰色「正常分诊」文字
+- 详情弹窗中：如为候补来源，额外展示紫色信息条，包含候补编号、匹配时间、处理人
+
+### 3. CSV 导出（`/api/export/appointments?format=csv`）
+表头在改期字段后新增 4 列候补字段：
+```
+是否来自候补,候补ID,候补匹配时间,候补处理人
+```
+
+### 4. JSON 导出（`/api/export/appointments?format=json`）
+每条预约对象新增 4 个字段：
+- `fromWaitlist`（boolean）：是否来自候补补号
+- `waitlistId`（number | null）：关联的候补记录 ID
+- `waitlistMatchedAt`（string | null）：匹配时间（ISO 字符串）
+- `waitlistHandledBy`（string | null）：处理人姓名（护士）
+
+---
+
 ## 用户可见的改期信息展示
 
 改期信息在所有关键页面和导出接口中均完整展示：
