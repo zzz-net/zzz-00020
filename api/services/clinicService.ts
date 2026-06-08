@@ -7,6 +7,7 @@ import type {
   Appointment,
   StatusHistory,
   RescheduleRequest,
+  RescheduleStatus,
   CreateApplicationReq,
   CreateSlotReq,
   TriageReq,
@@ -78,9 +79,16 @@ function rowToAppointment(r: any): Appointment {
     confirmedAt: r.confirmed_at,
     cancelledAt: r.cancelled_at,
     pendingRescheduleId: r.pending_reschedule_id ?? null,
-    pendingRescheduleStatus: r.pending_reschedule_status ?? null,
+    pendingRescheduleStatus: r.pending_reschedule_status
+      ? normalizeRescheduleStatus(r.pending_reschedule_status)
+      : null,
   };
 }
+function normalizeRescheduleStatus(s: string): RescheduleStatus {
+  if (s === 'pending_patient') return 'pending';
+  return s as RescheduleStatus;
+}
+
 function rowToReschedule(r: any): RescheduleRequest {
   return {
     id: r.id,
@@ -88,7 +96,7 @@ function rowToReschedule(r: any): RescheduleRequest {
     oldSlotId: r.old_slot_id,
     newSlotId: r.new_slot_id,
     reason: r.reason,
-    status: r.status,
+    status: normalizeRescheduleStatus(r.status),
     initiatedByRole: r.initiated_by_role,
     initiatedByName: r.initiated_by_name,
     decidedByRole: r.decided_by_role,
@@ -380,7 +388,7 @@ export function listAppointments(params?: {
     LEFT JOIN patient p ON p.id = ap.patient_id
     LEFT JOIN doctor d ON d.id = ap.doctor_id
     LEFT JOIN doctor_slot s ON s.id = ap.slot_id
-    LEFT JOIN reschedule_request pr ON pr.appointment_id = ap.id AND pr.status = 'pending'
+    LEFT JOIN reschedule_request pr ON pr.appointment_id = ap.id AND pr.status IN ('pending', 'pending_patient')
     ${where}
     ORDER BY ap.created_at DESC
   `;
@@ -472,8 +480,12 @@ export function listReschedules(params?: {
   const wheres: string[] = [];
   const args: any[] = [];
   if (params?.status) {
-    wheres.push('r.status = ?');
-    args.push(params.status);
+    if (params.status === 'pending') {
+      wheres.push("r.status IN ('pending', 'pending_patient')");
+    } else {
+      wheres.push('r.status = ?');
+      args.push(params.status);
+    }
   }
   if (params?.patientId) {
     wheres.push('ap.patient_id = ?');
@@ -520,7 +532,7 @@ export function initiateReschedule(
     return { success: false, error: '已取消的预约不可改期' };
   }
   const pending = db
-    .prepare("SELECT id FROM reschedule_request WHERE appointment_id = ? AND status = 'pending'")
+    .prepare("SELECT id FROM reschedule_request WHERE appointment_id = ? AND status IN ('pending', 'pending_patient')")
     .get(appointmentId);
   if (pending) {
     return { success: false, error: '该预约已有待确认的改期请求，请先处理' };
@@ -556,22 +568,28 @@ export function initiateReschedule(
     }
   }
 
+  let rescheduleId: number;
   const tx = db.transaction(() => {
     const info = db
       .prepare(
         `INSERT INTO reschedule_request
-         (appointment_id, old_slot_id, new_slot_id, reason, status, initiated_by_role, initiated_by_name)
-         VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+         (appointment_id, patient_id, old_slot_id, old_doctor_id, new_slot_id, new_doctor_id,
+          reason, status, requested_by, initiated_by_role, initiated_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
       )
       .run(
         appointmentId,
+        appt.patient_id,
         appt.slot_id,
+        appt.doctor_id,
         req.newSlotId,
+        newSlot.doctor_id,
         req.reason,
+        `${session.role}:${session.name}`,
         session.role,
         session.name,
       );
-    const rescheduleId = Number(info.lastInsertRowid);
+    rescheduleId = Number(info.lastInsertRowid);
     addHistory(
       appointmentId,
       appt.status,
@@ -583,8 +601,8 @@ export function initiateReschedule(
   });
   tx();
 
-  const list = listReschedules({ appointmentId });
-  return { success: true, data: list[0] };
+  const list = listReschedules();
+  return { success: true, data: list.find(x => x.id === rescheduleId) };
 }
 
 export function acceptReschedule(
@@ -593,7 +611,7 @@ export function acceptReschedule(
 ): { success: boolean; data?: RescheduleRequest; error?: string } {
   const r = db.prepare('SELECT * FROM reschedule_request WHERE id = ?').get(rescheduleId) as any;
   if (!r) return { success: false, error: '改期请求不存在' };
-  if (r.status !== 'pending') {
+  if (!['pending', 'pending_patient'].includes(r.status)) {
     return { success: false, error: `改期请求状态为 ${r.status}，仅待确认可接受` };
   }
   const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(r.appointment_id) as any;
@@ -694,7 +712,7 @@ export function rejectReschedule(
 ): { success: boolean; data?: RescheduleRequest; error?: string } {
   const r = db.prepare('SELECT * FROM reschedule_request WHERE id = ?').get(rescheduleId) as any;
   if (!r) return { success: false, error: '改期请求不存在' };
-  if (r.status !== 'pending') {
+  if (!['pending', 'pending_patient'].includes(r.status)) {
     return { success: false, error: `改期请求状态为 ${r.status}，仅待确认可拒绝` };
   }
   const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(r.appointment_id) as any;

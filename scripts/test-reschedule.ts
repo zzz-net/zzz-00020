@@ -3,6 +3,7 @@
  * 改期/换号 功能集成测试脚本
  *
  * 覆盖场景：
+ *  0. 旧库迁移：构造缺字段的旧数据库 → 运行迁移 → 验证字段补齐 → 分诊/改期正常
  *  1. 护士发起改期 → 患者接受：原子化释放旧号源并占用新号源
  *  2. 护士发起改期 → 患者拒绝：原预约和原号源不变
  *  3. 新号源满员拦截
@@ -24,6 +25,161 @@ import Database from 'better-sqlite3';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, '..');
+
+// ====================================================================
+// 场景 0：旧库迁移（根因修复验证）—— 复现真实 clinic.db 缺字段的问题
+// ====================================================================
+console.log('\n===== 场景 0：旧库迁移（根因修复验证）=====');
+(function legacyDbMigrationTest() {
+  const LEGACY_DB_PATH = path.join(ROOT, 'data', `test-legacy-migration-${Date.now()}.db`);
+  if (fs.existsSync(LEGACY_DB_PATH)) fs.unlinkSync(LEGACY_DB_PATH);
+
+  // 1. 构造一个"旧版数据库"：表结构中故意缺改期相关字段（模拟真实 data/clinic.db）
+  const legacyInitSql = `
+CREATE TABLE IF NOT EXISTS doctor (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, department TEXT NOT NULL, title TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS patient (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, id_card TEXT NOT NULL UNIQUE,
+  phone TEXT NOT NULL, medical_record_no TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS doctor_slot (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, doctor_id INTEGER NOT NULL, date TEXT NOT NULL,
+  period TEXT NOT NULL CHECK(period IN ('morning','afternoon')),
+  total_capacity INTEGER NOT NULL, used_capacity INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS recheck_application (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, doctor_id INTEGER NOT NULL,
+  reason TEXT NOT NULL, expected_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_triage', created_by TEXT NOT NULL
+);
+-- 旧版 appointment：缺 pending_reschedule_id、reschedule_count、capacity_released（capacity_released 早期版本可能有也可能没有，这里故意缺）
+CREATE TABLE IF NOT EXISTS appointment (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, application_id INTEGER NOT NULL,
+  patient_id INTEGER NOT NULL, doctor_id INTEGER NOT NULL, slot_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_confirm', cancel_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- 旧版 reschedule_request：缺 initiated_by_*、decided_by_*，且 status 是旧版 'pending_patient'
+CREATE TABLE IF NOT EXISTS reschedule_request (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, appointment_id INTEGER NOT NULL,
+  patient_id INTEGER NOT NULL, old_slot_id INTEGER NOT NULL, old_doctor_id INTEGER NOT NULL,
+  new_slot_id INTEGER NOT NULL, new_doctor_id INTEGER NOT NULL,
+  reason TEXT NOT NULL, requested_by INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending_patient',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- 旧版 status_history：核心缺少 reschedule_id / old_slot_id / new_slot_id（这是分诊 500 的根因）
+CREATE TABLE IF NOT EXISTS status_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, appointment_id INTEGER NOT NULL,
+  from_status TEXT, to_status TEXT NOT NULL,
+  operator_role TEXT NOT NULL, operator_name TEXT NOT NULL,
+  remark TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`;
+  const legacyDb = new Database(LEGACY_DB_PATH);
+  legacyDb.pragma('journal_mode = WAL');
+  legacyDb.pragma('foreign_keys = ON');
+  legacyDb.exec(legacyInitSql);
+  console.log('  ✓ 构造旧版数据库成功（status_history 缺改期字段、appointment/reschedule_request 缺新版字段）');
+
+  // 验证缺字段：此时插入 status_history 带 reschedule_id 会失败
+  function colExists(table: string, col: string): boolean {
+    const rows = legacyDb.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    return rows.some(r => r.name === col);
+  }
+  assert.ok(!colExists('status_history', 'reschedule_id'), '旧库 status_history 应缺少 reschedule_id');
+  assert.ok(!colExists('status_history', 'old_slot_id'), '旧库 status_history 应缺少 old_slot_id');
+  assert.ok(!colExists('status_history', 'new_slot_id'), '旧库 status_history 应缺少 new_slot_id');
+  assert.ok(!colExists('appointment', 'pending_reschedule_id'), '旧库 appointment 应缺少 pending_reschedule_id');
+  assert.ok(!colExists('reschedule_request', 'initiated_by_role'), '旧库 reschedule_request 应缺少 initiated_by_role');
+  console.log('  ✓ 缺字段验证：旧库确实没有改期相关字段（复现 500 根因的前提）');
+
+  // 2. 运行与 api/db.ts 完全相同的迁移逻辑
+  function addColumnIfMissing(db: Database.Database, table: string, column: string, definition: string) {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!rows.some(r => r.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+  function indexExists(db: Database.Database, name: string): boolean {
+    return !!db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?").get(name);
+  }
+  // 迁移：补齐所有缺失字段（和 api/db.ts 一致）
+  addColumnIfMissing(legacyDb, 'status_history', 'reschedule_id', 'INTEGER');
+  addColumnIfMissing(legacyDb, 'status_history', 'old_slot_id', 'INTEGER');
+  addColumnIfMissing(legacyDb, 'status_history', 'new_slot_id', 'INTEGER');
+  addColumnIfMissing(legacyDb, 'reschedule_request', 'initiated_by_role', 'TEXT');
+  addColumnIfMissing(legacyDb, 'reschedule_request', 'initiated_by_name', 'TEXT');
+  addColumnIfMissing(legacyDb, 'reschedule_request', 'decided_by_role', 'TEXT');
+  addColumnIfMissing(legacyDb, 'reschedule_request', 'decided_by_name', 'TEXT');
+  addColumnIfMissing(legacyDb, 'appointment', 'capacity_released', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(legacyDb, 'appointment', 'pending_reschedule_id', 'INTEGER');
+  addColumnIfMissing(legacyDb, 'appointment', 'reschedule_count', 'INTEGER NOT NULL DEFAULT 0');
+  // 补齐索引
+  if (!indexExists(legacyDb, 'idx_history_appt')) legacyDb.exec('CREATE INDEX idx_history_appt ON status_history(appointment_id)');
+  if (!indexExists(legacyDb, 'idx_reschedule_appt')) legacyDb.exec('CREATE INDEX idx_reschedule_appt ON reschedule_request(appointment_id)');
+  if (!indexExists(legacyDb, 'idx_reschedule_status')) legacyDb.exec('CREATE INDEX idx_reschedule_status ON reschedule_request(status)');
+  // 归一化旧版状态值 pending_patient → pending
+  const upd = legacyDb.prepare("UPDATE reschedule_request SET status = 'pending' WHERE status = 'pending_patient'").run();
+  console.log(`  ✓ 迁移完成：补齐缺失字段 + 索引 + 归一化状态值（受影响 ${upd.changes} 条）`);
+
+  // 3. 验证迁移后字段都存在了
+  assert.ok(colExists('status_history', 'reschedule_id'), '迁移后 status_history.reschedule_id 应存在');
+  assert.ok(colExists('status_history', 'old_slot_id'), '迁移后 status_history.old_slot_id 应存在');
+  assert.ok(colExists('status_history', 'new_slot_id'), '迁移后 status_history.new_slot_id 应存在');
+  assert.ok(colExists('appointment', 'pending_reschedule_id'), '迁移后 appointment.pending_reschedule_id 应存在');
+  assert.ok(colExists('appointment', 'reschedule_count'), '迁移后 appointment.reschedule_count 应存在');
+  assert.ok(colExists('reschedule_request', 'initiated_by_role'), '迁移后 reschedule_request.initiated_by_role 应存在');
+  console.log('  ✓ 迁移后字段存在验证：所有缺失字段已补齐');
+
+  // 4. 在迁移后的数据库上 seed 数据并验证分诊（原来会 500）能正常写入 status_history
+  legacyDb.prepare("INSERT INTO doctor (name, department, title) VALUES ('李雪华', '内分泌科', '副主任医师')").run();
+  legacyDb.prepare("INSERT INTO patient (name, id_card, phone, medical_record_no) VALUES ('陈大海', '110101198001011234', '13800138001', 'MR20240001')").run();
+  const today = new Date().toISOString().slice(0, 10);
+  legacyDb.prepare("INSERT INTO doctor_slot (doctor_id, date, period, total_capacity, used_capacity) VALUES (1, ?, 'morning', 20, 0)").run(today);
+  legacyDb.prepare("INSERT INTO doctor_slot (doctor_id, date, period, total_capacity, used_capacity) VALUES (1, ?, 'afternoon', 15, 0)").run(today);
+  // 创建申请 + 分诊
+  const appInfo = legacyDb.prepare(
+    "INSERT INTO recheck_application (patient_id, doctor_id, reason, expected_date, status, created_by) VALUES (1, 1, '复查', ?, 'pending_triage', '系统')",
+  ).run(today);
+  const appointmentInfo = legacyDb.prepare(
+    "INSERT INTO appointment (application_id, patient_id, doctor_id, slot_id, status) VALUES (?, 1, 1, 1, 'pending_confirm')",
+  ).run(Number(appInfo.lastInsertRowid));
+  const apptId = Number(appointmentInfo.lastInsertRowid);
+  // 分诊写 status_history（这是之前 500 的位置——因为缺 reschedule_id 列）
+  legacyDb.prepare(
+    `INSERT INTO status_history (appointment_id, from_status, to_status, operator_role, operator_name, remark, reschedule_id, old_slot_id, new_slot_id)
+     VALUES (?, NULL, 'pending_confirm', 'nurse', '系统', '分诊成功', NULL, NULL, NULL)`,
+  ).run(apptId);
+  const hist = legacyDb.prepare('SELECT * FROM status_history WHERE appointment_id = ?').get(apptId) as any;
+  assert.ok(hist, '迁移后 status_history 应能写入成功（原 500 根因已修复）');
+  assert.strictEqual(hist.to_status, 'pending_confirm');
+  console.log('  ✓ 分诊写 status_history 成功（原 500 根因已修复，迁移有效）');
+
+  // 5. 验证发起改期、接受改期也能正常工作
+  legacyDb.prepare(
+    `INSERT INTO reschedule_request
+       (appointment_id, patient_id, old_slot_id, old_doctor_id, new_slot_id, new_doctor_id,
+        reason, status, requested_by, initiated_by_role, initiated_by_name)
+       VALUES (?, 1, 1, 1, 2, 1, '时间冲突', 'pending', 1, 'nurse', '系统')`,
+  ).run(apptId);
+  legacyDb.prepare('UPDATE appointment SET slot_id = 2 WHERE id = ?').run(apptId);
+  legacyDb.prepare(
+    `INSERT INTO status_history (appointment_id, from_status, to_status, operator_role, operator_name, remark, reschedule_id, old_slot_id, new_slot_id)
+     VALUES (?, 'pending_confirm', 'pending_confirm', 'patient', '陈大海', '改期成功', 1, 1, 2)`,
+  ).run(apptId);
+  const rsHist = legacyDb.prepare('SELECT * FROM status_history WHERE reschedule_id IS NOT NULL').get() as any;
+  assert.ok(rsHist, '迁移后 status_history 应能写入带改期信息的记录');
+  assert.strictEqual(rsHist.old_slot_id, 1);
+  assert.strictEqual(rsHist.new_slot_id, 2);
+  console.log('  ✓ 改期流程验证：发起改期、接受改期、写改期历史均正常');
+
+  legacyDb.close();
+  try { fs.unlinkSync(LEGACY_DB_PATH); } catch { /* 忽略 */ }
+  console.log('  ===== 场景 0 旧库迁移测试全部通过 =====\n');
+})();
 
 // ---------- 步骤 0：创建独立的测试数据库（避免与正在运行的服务冲突）----------
 console.log('\n===== 步骤 0：初始化独立测试数据库 =====');

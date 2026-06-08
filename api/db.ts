@@ -124,6 +124,50 @@ CREATE INDEX IF NOT EXISTS idx_reschedule_status ON reschedule_request(status);
 
 db.exec(initSql);
 
+// ---------- 数据库迁移：兼容旧库，自动添加缺失字段 ----------
+// SQLite 支持 ALTER TABLE ADD COLUMN；已有列会静默跳过（通过 PRAGMA table_info 先检查）
+function columnExists(table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return rows.some(r => r.name === column);
+}
+function addColumnIfMissing(table: string, column: string, definition: string) {
+  if (!columnExists(table, column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    console.log(`[db-migrate] 表 ${table} 新增列 ${column}`);
+  }
+}
+
+// 为旧库 status_history 补齐改期相关 3 个字段（核心根因修复）
+addColumnIfMissing('status_history', 'reschedule_id', 'INTEGER');
+addColumnIfMissing('status_history', 'old_slot_id', 'INTEGER');
+addColumnIfMissing('status_history', 'new_slot_id', 'INTEGER');
+
+// 为旧库 reschedule_request 补齐新版字段（如果旧库是早期版本的 reschedule_request）
+addColumnIfMissing('reschedule_request', 'initiated_by_role', 'TEXT');
+addColumnIfMissing('reschedule_request', 'initiated_by_name', 'TEXT');
+addColumnIfMissing('reschedule_request', 'decided_by_role', 'TEXT');
+addColumnIfMissing('reschedule_request', 'decided_by_name', 'TEXT');
+
+// 为旧库 appointment 补齐字段（防止早期版本缺失）
+addColumnIfMissing('appointment', 'capacity_released', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('appointment', 'pending_reschedule_id', 'INTEGER');
+addColumnIfMissing('appointment', 'reschedule_count', 'INTEGER NOT NULL DEFAULT 0');
+
+// 补齐索引（旧库可能没有）
+function indexExists(name: string): boolean {
+  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?").get(name);
+  return !!row;
+}
+if (!indexExists('idx_reschedule_appt')) db.exec('CREATE INDEX idx_reschedule_appt ON reschedule_request(appointment_id)');
+if (!indexExists('idx_reschedule_status')) db.exec('CREATE INDEX idx_reschedule_status ON reschedule_request(status)');
+if (!indexExists('idx_history_appt')) db.exec('CREATE INDEX idx_history_appt ON status_history(appointment_id)');
+
+// 归一化旧版状态值
+const upd = db.prepare("UPDATE reschedule_request SET status = 'pending' WHERE status = 'pending_patient'").run();
+if (upd.changes > 0) console.log(`[db-migrate] 归一化 ${upd.changes} 条 reschedule_request status: pending_patient → pending`);
+
+// ---------- 迁移结束 ----------
+
 function seedIfEmpty() {
   const doctorCount = db.prepare('SELECT COUNT(*) as c FROM doctor').get() as { c: number };
   if (doctorCount.c === 0) {

@@ -113,6 +113,157 @@ npm run dev
 - 通过接口或重复点击取消，系统返回：「该预约已取消，不可重复取消（容量不会重复释放）」
 - 观察号源容量不会重复 -1
 
+### 4. 改期：患者拒绝 → 原预约 / 原号源完全不变
+- 护士发起改期后，切换到对应患者身份，在「预约确认」页点击「拒绝改期」，填写拒绝原因
+- 回到「预约记录」，观察该预约的医生、日期、时段均与改期前一致
+- 到「号源管理」观察旧号源已用容量未减少，新号源已用容量未增加
+
+### 5. 改期：新号源满员被拦截
+- 选择一个号源，通过「号源管理」或直接 SQL 将其 `used_capacity = total_capacity` 填满
+- 护士尝试发起改期到该满号源，系统返回错误「新号源容量已满」
+- 预约记录和号源容量均不变
+
+### 6. 改期：同日重复预约被拦截
+- 先为某患者在 **6月9日上午** 创建一个有效预约（分诊确认）
+- 再为该患者在 **6月8日下午** 创建另一个有效预约
+- 尝试将 6月8日 的预约改期到 **6月9日下午**（该患者 6月9日已有预约）
+- 系统返回错误「同日重复预约，请选择其他日期」
+
+### 7. 改期：权限不匹配被拦截
+- **患者 B** 尝试接受 / 拒绝 **患者 A** 的改期请求 → 接口返回「仅预约所属患者可接受/拒绝」
+- **医生**身份尝试发起改期 → 接口返回「仅护士可发起改期」
+- 页面层也做了对应控制：医生看不到「改期」按钮，患者只能操作自己的改期请求
+
+### 8. 改期：并发提交冲突，CAS 保证容量不超售、不负数
+- 通过自动化测试脚本覆盖（见下方「自动化测试」）
+- 两个患者同时接受改期到同一个容量=1 的号源时，先 accept 的成功，后 accept 的被拦截并返回「容量已满 / 并发冲突」
+- 最终号源 used_capacity 严格 = 1，无负数、无超售
+
+### 9. 改期：重启服务后数据完整可查
+- 完成一轮改期（发起 → 接受 / 拒绝）后，停止服务再重启
+- 回到「预约记录」→「查看历史」：
+  - 改期记录区块仍显示所有关联改期请求
+  - 状态时间线每条改期操作均保留（发起人、决定人、前后号源、原因、时间）
+- 导出 CSV / JSON：改期信息完整导出
+
+## 旧库兼容与自动迁移（根因修复说明）
+
+### 问题背景
+早期版本的 `data/clinic.db` 中 `status_history` 表缺少 `reschedule_id`、`old_slot_id`、`new_slot_id` 三个改期相关字段，同时 `reschedule_request` 和 `appointment` 表也可能缺少新版字段。导致护士分诊或发起改期时，SQL INSERT 因缺列直接抛出 `SQLITE_ERROR`，Express 返回 500。
+
+### 修复方式
+服务启动时在 [api/db.ts](file:///d:/workSpace/AI__SPACE/zzz-00020/api/db.ts#L127-L167) 自动执行数据库迁移，**无需任何手动操作**：
+
+1. **字段检测**：通过 `PRAGMA table_info(tablename)` 检测每列是否存在
+2. **补齐缺失列**：不存在则 `ALTER TABLE ... ADD COLUMN`（SQLite 仅支持新增列）
+3. **补齐索引**：`idx_reschedule_appt`、`idx_reschedule_status`、`idx_history_appt`
+4. **状态归一化**：将旧版状态值 `'pending_patient'` 统一更新为 `'pending'`
+
+### 迁移日志
+启动服务（`npm run dev` 或 `npm run server:dev`）时，终端（nodemon 输出）会打印迁移日志，例如：
+
+```
+[db-migrate] 表 status_history 新增列 reschedule_id
+[db-migrate] 表 status_history 新增列 old_slot_id
+[db-migrate] 表 status_history 新增列 new_slot_id
+[db-migrate] 表 reschedule_request 新增列 initiated_by_role
+[db-migrate] 表 reschedule_request 新增列 initiated_by_name
+[db-migrate] 表 appointment 新增列 pending_reschedule_id
+[db-migrate] 表 appointment 新增列 reschedule_count
+[db-migrate] 归一化 2 条 reschedule_request status: pending_patient → pending
+```
+
+若某列已存在，迁移逻辑会静默跳过，不会重复执行。服务重启多次也安全。
+
+---
+
+## 自动化测试（改期功能 8 场景 + HTTP 全链路回归）
+
+### 1. 单元/集成测试：`scripts/test-reschedule.ts`
+
+独立临时数据库（`data/test-reschedule-{timestamp}.db`），不影响主库 `data/clinic.db`。脚本结束后自动清理临时文件。
+
+```bash
+npx tsx scripts/test-reschedule.ts
+```
+
+覆盖的 8 个测试场景（含**旧库迁移根因修复**验证）：
+
+| # | 场景 | 验证点 |
+|---|------|--------|
+| 0 | **旧库迁移（根因修复）** | 构造缺改期字段的旧数据库 → 运行迁移 → 字段补齐 → 分诊/改期写入 status_history 不再报错 |
+| 1 | 患者拒绝改期 | 原预约 slot_id / 状态不变；旧号源 used_capacity 不变；新号源 used_capacity 不变 |
+| 2 | 患者接受改期 | 预约 slot_id / doctor_id 切换；旧号源 -1，新号源 +1；status_history 至少 2 条改期相关记录且含前后号源 |
+| 3 | 新号源满员拦截 | SQL 填满号源 → 发起改期返回含"容量已满"错误；号源 / 预约状态不变 |
+| 4 | 同日重复预约拦截 | 为患者在目标日期建一个已有预约 → 跨日期改期返回含"同日重复"错误 |
+| 5 | 权限不匹配拦截 | 非护士发起、非患者本人接受 / 拒绝均被拦截，返回对应错误信息 |
+| 6 | 并发提交 CAS | 创建容量=1 的号源，两患者均发起改期并 accept；先成功后失败，最终 used=1，无负数无超售 |
+| 7 | 重启后数据一致性 | db.close() → new Database(dbPath) 重新打开；预约数、改期请求数、状态历史数、容量范围均一致；改期详情 + 历史中 reschedule_id 关联正确 |
+
+### 2. HTTP 全链路回归测试：`scripts/http-regression-reschedule.ts`
+
+**必须先启动真实服务**（`npm run dev` 或 `npm run server:dev`，监听 :3001），然后使用既有 `data/clinic.db` 直接打真实 HTTP 接口，覆盖用户所有可见行为：
+
+```bash
+# 另开一个终端，确保后端服务已在 :3001 运行
+npx tsx scripts/http-regression-reschedule.ts
+```
+
+覆盖 7 个端到端用例：
+
+| # | 用例 | 验证点 |
+|---|------|--------|
+| 1 | 分诊不再 500 | 旧库迁移后，分诊写 status_history 返回 200（修复前返回 500） |
+| 2 | 护士发起改期 | POST /api/appointments/:id/reschedule 返回 200 |
+| 3 | 患者拒绝改期 | 原预约 slot、号源容量均不变 |
+| 4 | 患者接受改期 | 号源原子化切换（旧号源 -1，新号源 +1） |
+| 5 | 状态历史含改期信息 | GET /api/appointments/:id/history 返回 reschedule_id、old_slot_id、new_slot_id |
+| 6 | 权限/冲突拦截 | 医生发起被拦截、非本人接受被拦截、满员号源被拦截 |
+| 7 | 用户可见改期信息 | 预约记录含改期字段、改期列表接口正常、CSV/JSON 导出含改期列和 reschedules 数组 |
+
+### 测试输出示例（单元测试 + 迁移）
+
+```
+===== 场景 0：旧库迁移（根因修复验证）=====
+  ✓ 构造旧版数据库成功（status_history 缺改期字段）
+  ✓ 缺字段验证：旧库确实没有改期相关字段
+  ✓ 迁移完成：补齐缺失字段 + 索引 + 归一化状态值
+  ✓ 分诊写 status_history 成功（原 500 根因已修复，迁移有效）
+  ✓ 改期流程验证：发起改期、接受改期、写改期历史均正常
+
+===== 测试 7：重启后数据一致性 =====
+  ✓ 改期请求详情持久化正确
+  ✓ 状态历史含改期 ID、前后号源，持久化正确
+
+✅ 所有 8 个改期功能测试场景通过！
+```
+
+---
+
+## 用户可见的改期信息展示
+
+改期信息在所有关键页面和导出接口中均完整展示：
+
+### 1. 预约记录页（护士可见）
+- 每条预约在"改期记录"区块展示所有关联的改期请求（发起时间、原因、新号源、状态：待确认/已接受/已拒绝、决定人、决定原因）
+- "查看历史"弹窗时间线中，改期操作会额外显示**前后号源**、**改期原因**
+
+### 2. 患者确认页
+- 若有待确认改期，预约行展示醒目的"改期待确认"标签
+- 弹出两个按钮：**接受改期**、**拒绝改期**（拒绝需填写原因）
+
+### 3. CSV 导出（/api/export/csv）
+表头包含改期相关列：
+```
+预约ID,患者姓名,医生姓名,科室,就诊日期,时段,状态,是否有待改期,改期状态,取消原因,是否释放容量,创建时间,确认时间,取消时间
+```
+
+### 4. JSON 导出（/api/export/json）
+每条预约对象包含：
+- `pendingRescheduleId` / `pendingRescheduleStatus`：当前待确认改期（如有）
+- `rescheduleCount`：累计改期次数
+- `reschedules[]`：完整改期历史数组（含 oldSlot、newSlot、reason、status、decidedAt、rejectReason 等）
+
 ## 项目结构
 
 ```
