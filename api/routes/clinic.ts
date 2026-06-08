@@ -195,6 +195,37 @@ router.get('/export/json', (req: Request, res: Response) => {
   res.send(json);
 });
 
+router.get('/export/appointments', (req: Request, res: Response) => {
+  const format = (req.query.format as string)?.toLowerCase();
+  const status = req.query.status ? String(req.query.status) : undefined;
+  const dateFrom = req.query.dateFrom ? String(req.query.dateFrom) : undefined;
+  const dateTo = req.query.dateTo ? String(req.query.dateTo) : undefined;
+  if (format === 'csv') {
+    const csv = svc.exportAppointmentsCsv({ status, dateFrom, dateTo });
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="appointments_${Date.now()}.csv"`,
+    );
+    res.send(csv);
+    return;
+  }
+  if (format === 'json' || !format) {
+    const json = svc.exportAppointmentsJson({ status, dateFrom, dateTo });
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="appointments_${Date.now()}.json"`,
+    );
+    res.send(json);
+    return;
+  }
+  res.status(400).json({
+    success: false,
+    error: '不支持的导出格式，请使用 format=csv 或 format=json',
+  });
+});
+
 router.get('/waitlists', (req: Request, res: Response) => {
   const status = req.query.status ? (String(req.query.status) as WaitlistStatus) : undefined;
   const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;

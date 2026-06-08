@@ -301,13 +301,13 @@ npx tsx scripts/http-regression-waitlist.ts
 - 列表新增「来源」列：候补补号显示紫色「候补补号」标签；正常分诊显示灰色「正常分诊」文字
 - 详情弹窗中：如为候补来源，额外展示紫色信息条，包含候补编号、匹配时间、处理人
 
-### 3. CSV 导出（`/api/export/appointments?format=csv`）
+### 3. CSV 导出（`/api/export/csv`）
 表头在改期字段后新增 4 列候补字段：
 ```
 是否来自候补,候补ID,候补匹配时间,候补处理人
 ```
 
-### 4. JSON 导出（`/api/export/appointments?format=json`）
+### 4. JSON 导出（`/api/export/json`）
 每条预约对象新增 4 个字段：
 - `fromWaitlist`（boolean）：是否来自候补补号
 - `waitlistId`（number | null）：关联的候补记录 ID

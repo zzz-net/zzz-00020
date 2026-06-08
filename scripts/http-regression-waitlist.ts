@@ -427,6 +427,66 @@ async function main() {
     console.log('  ⚠️ JSON 中未找到来自候补的预约（可能暂无，跳过字段检查）');
   }
 
+  // ==============================
+  // 9. 导出路径回归：两条路径（/api/export/csv|json 与 /api/export/appointments?format=csv|json）均可用且候补字段完整
+  // ==============================
+  console.log('\n【用例 9】导出路径回归（两条路径均可用 + 候补字段完整）');
+
+  // 兼容路径 /api/export/appointments?format=csv → 可用且字段完整
+  const compatCsvResp = await fetch(`${API}/export/appointments?format=csv`, { headers: nurseHeaders });
+  assert.strictEqual(compatCsvResp.status, 200, `兼容路径 /api/export/appointments?format=csv 应返回 200，实际 ${compatCsvResp.status}`);
+  const compatCsvText = await compatCsvResp.text();
+  assert.ok(compatCsvText.includes('是否来自候补'), '兼容路径 CSV 应包含「是否来自候补」');
+  assert.ok(compatCsvText.includes('候补ID'), '兼容路径 CSV 应包含「候补ID」');
+  assert.ok(compatCsvText.includes('候补匹配时间'), '兼容路径 CSV 应包含「候补匹配时间」');
+  assert.ok(compatCsvText.includes('候补处理人'), '兼容路径 CSV 应包含「候补处理人」');
+  console.log('  ✓ 兼容路径 /api/export/appointments?format=csv 返回 200 且 4 个候补字段完整');
+
+  // 兼容路径 /api/export/appointments?format=json → 可用且字段完整
+  const compatJsonResp = await fetch(`${API}/export/appointments?format=json`, { headers: nurseHeaders });
+  assert.strictEqual(compatJsonResp.status, 200, `兼容路径 /api/export/appointments?format=json 应返回 200，实际 ${compatJsonResp.status}`);
+  const compatJsonData = await compatJsonResp.json();
+  const compatJsonArr: any[] = Array.isArray(compatJsonData) ? compatJsonData : (compatJsonData.data ?? []);
+  assert.ok(Array.isArray(compatJsonArr), '兼容路径 JSON 导出应返回数组');
+  if (compatJsonArr.length > 0) {
+    const sample = compatJsonArr[0];
+    assert.ok('fromWaitlist' in sample || 'from_waitlist' in sample, '兼容路径 JSON 每条预约应包含 fromWaitlist 字段');
+    console.log('  ✓ 兼容路径 /api/export/appointments?format=json 返回 200 且包含 fromWaitlist 等候补字段');
+  } else {
+    console.log('  ⚠️ 兼容路径 JSON 导出现无数据（暂无预约），跳过字段检查');
+  }
+
+  // 兼容路径 /api/export/appointments?format=invalid → 应返回 400 并给出明确错误提示
+  const invalidResp = await fetch(`${API}/export/appointments?format=xml`, { headers: nurseHeaders });
+  assert.strictEqual(invalidResp.status, 400, `无效 format 应返回 400，实际 ${invalidResp.status}`);
+  const invalidBody = await invalidResp.json();
+  assert.ok(invalidBody.error && String(invalidBody.error).includes('format'), '无效 format 应返回包含 format 关键词的错误提示');
+  console.log('  ✓ 无效 format=xml 返回 400 并给出明确错误提示，不再误导');
+
+  // 主路径 /api/export/csv → 可用且字段完整
+  const realCsvResp = await fetch(`${API}/export/csv`, { headers: nurseHeaders });
+  assert.strictEqual(realCsvResp.status, 200, `主路径 /api/export/csv 应返回 200，实际 ${realCsvResp.status}`);
+  const realCsvText = await realCsvResp.text();
+  assert.ok(realCsvText.includes('是否来自候补'), '主路径 CSV 导出应包含「是否来自候补」');
+  assert.ok(realCsvText.includes('候补ID'), '主路径 CSV 导出应包含「候补ID」');
+  assert.ok(realCsvText.includes('候补匹配时间'), '主路径 CSV 导出应包含「候补匹配时间」');
+  assert.ok(realCsvText.includes('候补处理人'), '主路径 CSV 导出应包含「候补处理人」');
+  console.log('  ✓ 主路径 /api/export/csv 返回 200 且 4 个候补字段完整');
+
+  // 主路径 /api/export/json → 可用且字段完整
+  const realJsonResp = await fetch(`${API}/export/json`, { headers: nurseHeaders });
+  assert.strictEqual(realJsonResp.status, 200, `主路径 /api/export/json 应返回 200，实际 ${realJsonResp.status}`);
+  const realJsonData = await realJsonResp.json();
+  const realJsonArr: any[] = Array.isArray(realJsonData) ? realJsonData : (realJsonData.data ?? []);
+  assert.ok(Array.isArray(realJsonArr), '主路径 JSON 导出应返回数组');
+  if (realJsonArr.length > 0) {
+    const sample = realJsonArr[0];
+    assert.ok('fromWaitlist' in sample || 'from_waitlist' in sample, '主路径 JSON 每条预约应包含 fromWaitlist 字段');
+    console.log('  ✓ 主路径 /api/export/json 返回 200 且包含 fromWaitlist 等候补字段');
+  } else {
+    console.log('  ⚠️ 主路径 JSON 导出现无数据（暂无预约），跳过字段检查');
+  }
+
   console.log('\n✅ 候补补号 HTTP 回归测试全部通过！');
 }
 
