@@ -38,6 +38,8 @@ export type ApplicationStatus =
 
 export type AppointmentStatus = 'pending_confirm' | 'confirmed' | 'cancelled';
 
+export type RescheduleStatus = 'pending' | 'accepted' | 'rejected';
+
 export interface RecheckApplication {
   id: number;
   patientId: number;
@@ -71,6 +73,31 @@ export interface Appointment {
   createdAt: string;
   confirmedAt: string | null;
   cancelledAt: string | null;
+  pendingRescheduleId?: number | null;
+  pendingRescheduleStatus?: RescheduleStatus | null;
+}
+
+export interface RescheduleRequest {
+  id: number;
+  appointmentId: number;
+  oldSlotId: number;
+  newSlotId: number;
+  reason: string;
+  status: RescheduleStatus;
+  initiatedByRole: UserRole;
+  initiatedByName: string;
+  decidedByRole: UserRole | null;
+  decidedByName: string | null;
+  rejectReason: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+  oldSlotDate?: string;
+  oldSlotPeriod?: SlotPeriod;
+  newSlotDate?: string;
+  newSlotPeriod?: SlotPeriod;
+  newDoctorId?: number;
+  newDoctorName?: string;
+  newDepartment?: string;
 }
 
 export interface StatusHistory {
@@ -81,6 +108,9 @@ export interface StatusHistory {
   operatorRole: UserRole;
   operatorName: string;
   remark: string | null;
+  rescheduleId: number | null;
+  oldSlotId: number | null;
+  newSlotId: number | null;
   createdAt: string;
 }
 
@@ -104,6 +134,15 @@ export interface TriageReq {
 
 export interface CancelAppointmentReq {
   reason: string;
+}
+
+export interface RescheduleReq {
+  newSlotId: number;
+  reason: string;
+}
+
+export interface RescheduleDecisionReq {
+  rejectReason?: string;
 }
 
 export interface ApiResponse<T> {
@@ -140,4 +179,10 @@ export const STATUS_LABEL: Record<ApplicationStatus | AppointmentStatus, string>
   pending_confirm: '待患者确认',
   confirmed: '已确认',
   cancelled: '已取消',
+};
+
+export const RESCHEDULE_STATUS_LABEL: Record<RescheduleStatus, string> = {
+  pending: '待患者确认',
+  accepted: '改期成功',
+  rejected: '患者已拒绝',
 };

@@ -77,6 +77,25 @@ CREATE TABLE IF NOT EXISTS appointment (
   FOREIGN KEY (slot_id) REFERENCES doctor_slot(id)
 );
 
+CREATE TABLE IF NOT EXISTS reschedule_request (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  appointment_id INTEGER NOT NULL,
+  old_slot_id INTEGER NOT NULL,
+  new_slot_id INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  initiated_by_role TEXT NOT NULL,
+  initiated_by_name TEXT NOT NULL,
+  decided_by_role TEXT,
+  decided_by_name TEXT,
+  reject_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  decided_at TEXT,
+  FOREIGN KEY (appointment_id) REFERENCES appointment(id),
+  FOREIGN KEY (old_slot_id) REFERENCES doctor_slot(id),
+  FOREIGN KEY (new_slot_id) REFERENCES doctor_slot(id)
+);
+
 CREATE TABLE IF NOT EXISTS status_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   appointment_id INTEGER NOT NULL,
@@ -85,14 +104,22 @@ CREATE TABLE IF NOT EXISTS status_history (
   operator_role TEXT NOT NULL,
   operator_name TEXT NOT NULL,
   remark TEXT,
+  reschedule_id INTEGER,
+  old_slot_id INTEGER,
+  new_slot_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (appointment_id) REFERENCES appointment(id)
+  FOREIGN KEY (appointment_id) REFERENCES appointment(id),
+  FOREIGN KEY (reschedule_id) REFERENCES reschedule_request(id),
+  FOREIGN KEY (old_slot_id) REFERENCES doctor_slot(id),
+  FOREIGN KEY (new_slot_id) REFERENCES doctor_slot(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_slot_doctor_date ON doctor_slot(doctor_id, date);
 CREATE INDEX IF NOT EXISTS idx_appt_patient ON appointment(patient_id);
 CREATE INDEX IF NOT EXISTS idx_appt_status ON appointment(status);
 CREATE INDEX IF NOT EXISTS idx_history_appt ON status_history(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_reschedule_appt ON reschedule_request(appointment_id);
+CREATE INDEX IF NOT EXISTS idx_reschedule_status ON reschedule_request(status);
 `;
 
 db.exec(initSql);

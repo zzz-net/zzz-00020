@@ -1,6 +1,6 @@
 # 门诊复诊排班与补号协同系统
 
-本地门诊复诊排班与补号协同系统，覆盖复诊申请 → 分诊确认 → 医生放号 → 患者确认 的完整闭环，支持预约记录查询、状态历史追溯、数据导出（CSV/JSON），数据持久化到本地 SQLite。
+本地门诊复诊排班与补号协同系统，覆盖 **复诊申请 → 分诊确认 → 医生放号 → 患者确认 → 改期/换号** 的完整闭环，支持预约记录查询、状态历史追溯（含改期全链路）、数据导出（CSV/JSON，包含改期信息），数据持久化到本地 SQLite（重启后改期记录完整可查）。
 
 ## 技术栈
 
@@ -142,7 +142,9 @@ npm run dev
 | `npm run dev` | 同时启动前端 + 后端开发服务器 |
 | `npm run client:dev` | 仅启动前端 Vite |
 | `npm run server:dev` | 仅启动后端 Express (nodemon) |
-| `npm run check` | TypeScript 类型检查 |
+| `npm run check` | TypeScript 类型检查 + 提交边界防回归校验 |
+| `npm run check:gitignore` | 单独运行 .gitignore / 提交边界校验 |
+| `npm run data:reset` | 清理本地 SQLite 数据文件（下次启动自动重建样例数据） |
 | `npm run lint` | ESLint 检查 |
 | `npm run build` | 生产构建 |
 
@@ -155,4 +157,44 @@ npm run dev
 - 预约记录及其状态
 - 每条状态变更历史（操作人、时间、备注/原因）
 
-如需重置数据库，删除 `./data/` 目录后重启即可。
+### 本地数据重建
+
+`data/` 目录完全由运行时自动管理：
+
+1. **首次启动（或数据被清理后）**：[api/db.ts](file:///d:/workSpace/AI__SPACE/zzz-00020/api/db.ts#L9-L14) 会自动 `mkdir -p data/` 并创建 `clinic.db`，随后写入 3 医生、3 患者、6 号源的样例数据。
+2. **正常运行时**：SQLite 以 WAL 模式工作（`db.pragma('journal_mode = WAL')`），会在 `data/` 下额外生成 `clinic.db-wal`（写入日志）和 `clinic.db-shm`（共享内存索引）两个临时文件，属于数据库运行痕迹。
+3. **停止服务后**：WAL 内容会在下次启动或 `checkpoint` 时合并回主 db 文件，-wal / -shm 可随时删除而不影响已提交的数据（但建议仅在服务停止时操作）。
+
+### 本地数据清理 / 重置
+
+```bash
+# 推荐：使用内置脚本（安全，仅删 SQLite 相关文件）
+npm run data:reset
+
+# 等价于手动：
+#   rm -f data/clinic.db data/clinic.db-wal data/clinic.db-shm data/clinic.db-journal
+
+# 清理后再次运行：
+npm run dev   # 启动时自动重建空库并 seed 样例数据
+```
+
+### 为什么这些文件不会被提交到 Git
+
+项目根目录 [.gitignore](file:///d:/workSpace/AI__SPACE/zzz-00020/.gitignore) 已明确排除：
+
+| 忽略规则 | 说明 |
+|----------|------|
+| `data/` | 整个 SQLite 数据目录（真实预约数据，绝不能混入源码） |
+| `*.db` `*.db-wal` `*.db-shm` `*.db-journal` | 兜底，防止任何位置的 SQLite 文件被误提交 |
+| `.trae/` | IDE 工具私有目录（含设计过程文档、缓存等个人运行痕迹） |
+| `node_modules/` `dist/` `.vite/` | 依赖、构建产物、Vite 缓存 |
+
+提交前可运行 `npm run check`（会自动调用 `scripts/check-gitignore.js`）进行防回归校验，确保运行痕迹和私有数据不会被误提交。若需手动核查：
+
+```bash
+# 查看当前仓库状态（应只有代码、配置、README 的变更）
+git status --short
+
+# 验证某个具体文件是否被忽略
+git check-ignore -v data/clinic.db .trae/documents/PRD.md
+```

@@ -6,10 +6,13 @@ import type {
   RecheckApplication,
   Appointment,
   StatusHistory,
+  RescheduleRequest,
   CreateApplicationReq,
   CreateSlotReq,
   TriageReq,
   CancelAppointmentReq,
+  RescheduleReq,
+  RescheduleDecisionReq,
   RoleSession,
   OverviewStats,
 } from '@shared/types';
@@ -74,6 +77,32 @@ function rowToAppointment(r: any): Appointment {
     createdAt: r.created_at,
     confirmedAt: r.confirmed_at,
     cancelledAt: r.cancelled_at,
+    pendingRescheduleId: r.pending_reschedule_id ?? null,
+    pendingRescheduleStatus: r.pending_reschedule_status ?? null,
+  };
+}
+function rowToReschedule(r: any): RescheduleRequest {
+  return {
+    id: r.id,
+    appointmentId: r.appointment_id,
+    oldSlotId: r.old_slot_id,
+    newSlotId: r.new_slot_id,
+    reason: r.reason,
+    status: r.status,
+    initiatedByRole: r.initiated_by_role,
+    initiatedByName: r.initiated_by_name,
+    decidedByRole: r.decided_by_role,
+    decidedByName: r.decided_by_name,
+    rejectReason: r.reject_reason,
+    createdAt: r.created_at,
+    decidedAt: r.decided_at,
+    oldSlotDate: r.old_slot_date,
+    oldSlotPeriod: r.old_slot_period,
+    newSlotDate: r.new_slot_date,
+    newSlotPeriod: r.new_slot_period,
+    newDoctorId: r.new_doctor_id,
+    newDoctorName: r.new_doctor_name,
+    newDepartment: r.new_department,
   };
 }
 function rowToHistory(r: any): StatusHistory {
@@ -85,6 +114,9 @@ function rowToHistory(r: any): StatusHistory {
     operatorRole: r.operator_role,
     operatorName: r.operator_name,
     remark: r.remark,
+    rescheduleId: r.reschedule_id ?? null,
+    oldSlotId: r.old_slot_id ?? null,
+    newSlotId: r.new_slot_id ?? null,
     createdAt: r.created_at,
   };
 }
@@ -227,11 +259,22 @@ function addHistory(
   toStatus: string,
   session: RoleSession,
   remark?: string | null,
+  options?: { rescheduleId?: number; oldSlotId?: number; newSlotId?: number },
 ) {
   db.prepare(
-    `INSERT INTO status_history (appointment_id, from_status, to_status, operator_role, operator_name, remark)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(appointmentId, fromStatus, toStatus, session.role, session.name, remark || null);
+    `INSERT INTO status_history (appointment_id, from_status, to_status, operator_role, operator_name, remark, reschedule_id, old_slot_id, new_slot_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    appointmentId,
+    fromStatus,
+    toStatus,
+    session.role,
+    session.name,
+    remark || null,
+    options?.rescheduleId ?? null,
+    options?.oldSlotId ?? null,
+    options?.newSlotId ?? null,
+  );
 }
 
 export function triageApplication(
@@ -331,11 +374,13 @@ export function listAppointments(params?: {
   const where = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
   const sql = `
     SELECT ap.*, p.name as patient_name, d.name as doctor_name, d.department,
-           s.date as slot_date, s.period as slot_period
+           s.date as slot_date, s.period as slot_period,
+           pr.id as pending_reschedule_id, pr.status as pending_reschedule_status
     FROM appointment ap
     LEFT JOIN patient p ON p.id = ap.patient_id
     LEFT JOIN doctor d ON d.id = ap.doctor_id
     LEFT JOIN doctor_slot s ON s.id = ap.slot_id
+    LEFT JOIN reschedule_request pr ON pr.appointment_id = ap.id AND pr.status = 'pending'
     ${where}
     ORDER BY ap.created_at DESC
   `;
@@ -419,6 +464,267 @@ export function cancelAppointment(
   return { success: true, data: rowToAppointment(row) };
 }
 
+export function listReschedules(params?: {
+  status?: string;
+  patientId?: number;
+  appointmentId?: number;
+}): RescheduleRequest[] {
+  const wheres: string[] = [];
+  const args: any[] = [];
+  if (params?.status) {
+    wheres.push('r.status = ?');
+    args.push(params.status);
+  }
+  if (params?.patientId) {
+    wheres.push('ap.patient_id = ?');
+    args.push(params.patientId);
+  }
+  if (params?.appointmentId) {
+    wheres.push('r.appointment_id = ?');
+    args.push(params.appointmentId);
+  }
+  const where = wheres.length ? `WHERE ${wheres.join(' AND ')}` : '';
+  const sql = `
+    SELECT r.*,
+           os.date as old_slot_date, os.period as old_slot_period,
+           ns.date as new_slot_date, ns.period as new_slot_period,
+           nd.id as new_doctor_id, nd.name as new_doctor_name, nd.department as new_department
+    FROM reschedule_request r
+    LEFT JOIN appointment ap ON ap.id = r.appointment_id
+    LEFT JOIN doctor_slot os ON os.id = r.old_slot_id
+    LEFT JOIN doctor_slot ns ON ns.id = r.new_slot_id
+    LEFT JOIN doctor nd ON nd.id = ns.doctor_id
+    ${where}
+    ORDER BY r.created_at DESC
+  `;
+  return db.prepare(sql).all(...args).map(rowToReschedule);
+}
+
+export function initiateReschedule(
+  appointmentId: number,
+  req: RescheduleReq,
+  session: RoleSession,
+): { success: boolean; data?: RescheduleRequest; error?: string } {
+  if (session.role !== 'nurse') {
+    return { success: false, error: '仅护士可发起改期' };
+  }
+  if (!req.reason || req.reason.trim().length < 2) {
+    return { success: false, error: '请填写改期原因（至少2个字符）' };
+  }
+  if (!req.newSlotId || req.newSlotId <= 0) {
+    return { success: false, error: '请选择新的号源' };
+  }
+  const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(appointmentId) as any;
+  if (!appt) return { success: false, error: '预约不存在' };
+  if (appt.status === 'cancelled') {
+    return { success: false, error: '已取消的预约不可改期' };
+  }
+  const pending = db
+    .prepare("SELECT id FROM reschedule_request WHERE appointment_id = ? AND status = 'pending'")
+    .get(appointmentId);
+  if (pending) {
+    return { success: false, error: '该预约已有待确认的改期请求，请先处理' };
+  }
+  if (req.newSlotId === appt.slot_id) {
+    return { success: false, error: '新号源与原号源相同，请更换' };
+  }
+  const newSlot = db.prepare('SELECT * FROM doctor_slot WHERE id = ?').get(req.newSlotId) as any;
+  if (!newSlot) return { success: false, error: '新号源不存在' };
+  const oldSlot = db.prepare('SELECT * FROM doctor_slot WHERE id = ?').get(appt.slot_id) as any;
+  if (!oldSlot) return { success: false, error: '原号源不存在' };
+
+  if (newSlot.used_capacity >= newSlot.total_capacity) {
+    return { success: false, error: '新号源容量已满，请选择其他号源' };
+  }
+
+  if (newSlot.date === oldSlot.date) {
+    // 同日改期到同日期不需要检查重复预约（因为同患者同日已经有一个预约，改期后仍然是一个）
+  } else {
+    const overlap = db
+      .prepare(
+        `SELECT COUNT(*) as c FROM appointment ap
+         JOIN doctor_slot s ON s.id = ap.slot_id
+         WHERE ap.patient_id = ? AND s.date = ? AND ap.status IN ('pending_confirm','confirmed')
+           AND ap.id != ?`,
+      )
+      .get(appt.patient_id, newSlot.date, appointmentId) as { c: number };
+    if (overlap.c > 0) {
+      return {
+        success: false,
+        error: '该患者在新号源日期已存在有效预约，存在同日重复，请选择其他日期',
+      };
+    }
+  }
+
+  const tx = db.transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO reschedule_request
+         (appointment_id, old_slot_id, new_slot_id, reason, status, initiated_by_role, initiated_by_name)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+      )
+      .run(
+        appointmentId,
+        appt.slot_id,
+        req.newSlotId,
+        req.reason,
+        session.role,
+        session.name,
+      );
+    const rescheduleId = Number(info.lastInsertRowid);
+    addHistory(
+      appointmentId,
+      appt.status,
+      appt.status,
+      session,
+      `护士发起改期，原因: ${req.reason}`,
+      { rescheduleId, oldSlotId: appt.slot_id, newSlotId: req.newSlotId },
+    );
+  });
+  tx();
+
+  const list = listReschedules({ appointmentId });
+  return { success: true, data: list[0] };
+}
+
+export function acceptReschedule(
+  rescheduleId: number,
+  session: RoleSession,
+): { success: boolean; data?: RescheduleRequest; error?: string } {
+  const r = db.prepare('SELECT * FROM reschedule_request WHERE id = ?').get(rescheduleId) as any;
+  if (!r) return { success: false, error: '改期请求不存在' };
+  if (r.status !== 'pending') {
+    return { success: false, error: `改期请求状态为 ${r.status}，仅待确认可接受` };
+  }
+  const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(r.appointment_id) as any;
+  if (!appt) return { success: false, error: '关联预约不存在' };
+  if (appt.status === 'cancelled') {
+    return { success: false, error: '关联预约已取消，无法接受改期' };
+  }
+  if (session.role === 'patient' && session.patientId !== appt.patient_id) {
+    return { success: false, error: '仅预约所属患者可接受改期' };
+  }
+
+  const oldSlot = db.prepare('SELECT * FROM doctor_slot WHERE id = ?').get(r.old_slot_id) as any;
+  const newSlot = db.prepare('SELECT * FROM doctor_slot WHERE id = ?').get(r.new_slot_id) as any;
+  if (!oldSlot || !newSlot) return { success: false, error: '号源数据异常' };
+
+  if (newSlot.date !== oldSlot.date) {
+    const overlap = db
+      .prepare(
+        `SELECT COUNT(*) as c FROM appointment ap
+         JOIN doctor_slot s ON s.id = ap.slot_id
+         WHERE ap.patient_id = ? AND s.date = ? AND ap.status IN ('pending_confirm','confirmed')
+           AND ap.id != ?`,
+      )
+      .get(appt.patient_id, newSlot.date, appt.id) as { c: number };
+    if (overlap.c > 0) {
+      return {
+        success: false,
+        error: '该患者在新号源日期已存在有效预约，存在同日重复，改期失败',
+      };
+    }
+  }
+
+  const tx = db.transaction(() => {
+    const newSlotAfter = db
+      .prepare('SELECT * FROM doctor_slot WHERE id = ?')
+      .get(r.new_slot_id) as any;
+    if (newSlotAfter.used_capacity >= newSlotAfter.total_capacity) {
+      throw new Error('RESCHEDULE_CONFLICT:新号源容量已满，改期失败（并发冲突）');
+    }
+
+    const affected = db
+      .prepare(
+        'UPDATE doctor_slot SET used_capacity = used_capacity + 1 WHERE id = ? AND used_capacity < total_capacity',
+      )
+      .run(r.new_slot_id);
+    if (affected.changes === 0) {
+      throw new Error('RESCHEDULE_CONFLICT:新号源占用失败，容量已满（并发冲突）');
+    }
+
+    if (!appt.capacity_released) {
+      db.prepare(
+        'UPDATE doctor_slot SET used_capacity = MAX(used_capacity - 1, 0) WHERE id = ?',
+      ).run(r.old_slot_id);
+    }
+
+    db.prepare(
+      `UPDATE appointment SET slot_id = ?, doctor_id = ?, capacity_released = 0 WHERE id = ?`,
+    ).run(r.new_slot_id, newSlot.doctor_id, r.appointment_id);
+
+    db.prepare(
+      `UPDATE recheck_application SET doctor_id = ?, slot_id = ? WHERE appointment_id = ?`,
+    ).run(newSlot.doctor_id, r.new_slot_id, r.appointment_id);
+
+    db.prepare(
+      `UPDATE reschedule_request
+       SET status = 'accepted', decided_by_role = ?, decided_by_name = ?, decided_at = datetime('now')
+       WHERE id = ?`,
+    ).run(session.role, session.name, rescheduleId);
+
+    addHistory(
+      r.appointment_id,
+      appt.status,
+      appt.status,
+      session,
+      `患者接受改期`,
+      { rescheduleId, oldSlotId: r.old_slot_id, newSlotId: r.new_slot_id },
+    );
+  });
+
+  try {
+    tx();
+  } catch (e: any) {
+    const msg: string = e.message || String(e);
+    if (msg.startsWith('RESCHEDULE_CONFLICT:')) {
+      return { success: false, error: msg.slice('RESCHEDULE_CONFLICT:'.length) };
+    }
+    throw e;
+  }
+
+  const list = listReschedules({ appointmentId: r.appointment_id });
+  return { success: true, data: list.find((x) => x.id === rescheduleId) };
+}
+
+export function rejectReschedule(
+  rescheduleId: number,
+  req: RescheduleDecisionReq,
+  session: RoleSession,
+): { success: boolean; data?: RescheduleRequest; error?: string } {
+  const r = db.prepare('SELECT * FROM reschedule_request WHERE id = ?').get(rescheduleId) as any;
+  if (!r) return { success: false, error: '改期请求不存在' };
+  if (r.status !== 'pending') {
+    return { success: false, error: `改期请求状态为 ${r.status}，仅待确认可拒绝` };
+  }
+  const appt = db.prepare('SELECT * FROM appointment WHERE id = ?').get(r.appointment_id) as any;
+  if (!appt) return { success: false, error: '关联预约不存在' };
+  if (session.role === 'patient' && session.patientId !== appt.patient_id) {
+    return { success: false, error: '仅预约所属患者可拒绝改期' };
+  }
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE reschedule_request
+       SET status = 'rejected', decided_by_role = ?, decided_by_name = ?, reject_reason = ?, decided_at = datetime('now')
+       WHERE id = ?`,
+    ).run(session.role, session.name, req.rejectReason || null, rescheduleId);
+
+    addHistory(
+      r.appointment_id,
+      appt.status,
+      appt.status,
+      session,
+      `患者拒绝改期${req.rejectReason ? `，原因: ${req.rejectReason}` : ''}`,
+      { rescheduleId, oldSlotId: r.old_slot_id, newSlotId: r.new_slot_id },
+    );
+  });
+  tx();
+
+  const list = listReschedules({ appointmentId: r.appointment_id });
+  return { success: true, data: list.find((x) => x.id === rescheduleId) };
+}
+
 export function listAppointmentHistory(appointmentId: number): StatusHistory[] {
   return db
     .prepare(
@@ -479,6 +785,8 @@ export function exportAppointmentsCsv(params?: {
     '就诊日期',
     '时段',
     '状态',
+    '是否有待改期',
+    '改期状态',
     '取消原因',
     '是否释放容量',
     '创建时间',
@@ -494,6 +802,14 @@ export function exportAppointmentsCsv(params?: {
         : r.status === 'confirmed'
         ? '已确认'
         : '已取消';
+    const pendingReschedule = r.pendingRescheduleId ? '是' : '否';
+    const rescheduleStatusLabel = r.pendingRescheduleStatus
+      ? r.pendingRescheduleStatus === 'pending'
+        ? '待患者确认'
+        : r.pendingRescheduleStatus === 'accepted'
+        ? '改期成功'
+        : '患者已拒绝'
+      : '';
     lines.push(
       [
         r.id,
@@ -503,6 +819,8 @@ export function exportAppointmentsCsv(params?: {
         r.slotDate || '',
         period,
         statusLabel,
+        pendingReschedule,
+        rescheduleStatusLabel,
         (r.cancelReason || '').replace(/,/g, '，'),
         r.capacityReleased ? '是' : '否',
         r.createdAt,
@@ -519,6 +837,17 @@ export function exportAppointmentsJson(params?: {
   dateFrom?: string;
   dateTo?: string;
 }): string {
-  const rows = listAppointments(params);
-  return JSON.stringify(rows, null, 2);
+  const appts = listAppointments(params);
+  const apptIds = appts.map((a) => a.id);
+  const allReschedules = listReschedules();
+  const rescheduleByAppt = new Map<number, RescheduleRequest[]>();
+  for (const rs of allReschedules) {
+    if (!rescheduleByAppt.has(rs.appointmentId)) rescheduleByAppt.set(rs.appointmentId, []);
+    rescheduleByAppt.get(rs.appointmentId)!.push(rs);
+  }
+  const enriched = appts.map((a) => ({
+    ...a,
+    reschedules: rescheduleByAppt.get(a.id) || [],
+  }));
+  return JSON.stringify(enriched, null, 2);
 }

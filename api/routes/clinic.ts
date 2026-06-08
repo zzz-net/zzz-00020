@@ -6,6 +6,8 @@ import type {
   CreateSlotReq,
   TriageReq,
   CancelAppointmentReq,
+  RescheduleReq,
+  RescheduleDecisionReq,
 } from '@shared/types';
 
 const router = Router();
@@ -111,6 +113,51 @@ router.post('/appointments/:id/cancel', (req: Request, res: Response) => {
 router.get('/appointments/:id/history', (req: Request, res: Response) => {
   const id = Number(req.params.id);
   res.json({ success: true, data: svc.listAppointmentHistory(id) });
+});
+
+router.get('/reschedules', (req: Request, res: Response) => {
+  const status = req.query.status ? String(req.query.status) : undefined;
+  const patientId = req.query.patientId ? Number(req.query.patientId) : undefined;
+  const appointmentId = req.query.appointmentId
+    ? Number(req.query.appointmentId)
+    : undefined;
+  res.json({ success: true, data: svc.listReschedules({ status, patientId, appointmentId }) });
+});
+
+router.post(
+  '/appointments/:id/reschedule',
+  requireRole('nurse'),
+  (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const body = req.body as RescheduleReq;
+    const result = svc.initiateReschedule(id, body, req.session!);
+    if (!result.success) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  },
+);
+
+router.post('/reschedules/:id/accept', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const result = svc.acceptReschedule(id, req.session!);
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+router.post('/reschedules/:id/reject', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const body = req.body as RescheduleDecisionReq;
+  const result = svc.rejectReschedule(id, body, req.session!);
+  if (!result.success) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
 });
 
 router.get('/stats/overview', (_req: Request, res: Response) => {
