@@ -8,9 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && npm run check:gitignore",
+    "check:gitignore": "node scripts/check-gitignore.js",
     "server:dev": "nodemon",
-    "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\""
+    "dev": "concurrently \"npm run client:dev\" \"npm run server:dev\"",
+    "data:reset": "node scripts/reset-data.js"
   },
   "dependencies": {
     "clsx": "^2.1.1",

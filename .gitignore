@@ -7,10 +7,27 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies and build output
 node_modules
 dist
 dist-ssr
 *.local
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# SQLite databases and runtime files (真实预约数据，绝不能提交)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE / Tool private directories (工具运行痕迹，不含源码)
+.trae/
+.vite
 
 # Editor directories and files
 .vscode/*
@@ -22,4 +39,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.vite
